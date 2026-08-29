@@ -1,0 +1,16 @@
+DefectDock Proprietary License
+
+Copyright (c) 2026. All rights reserved.
+
+The source code, documentation, configuration, and other original material in
+this repository may not be copied, modified, distributed, sublicensed, sold,
+or used to provide a commercial service without prior written permission from
+the copyright owner.
+
+This repository contains or depends on third-party components that remain
+subject to their respective licenses. See THIRD_PARTY_NOTICES.md. No rights to
+third-party names, trademarks, datasets, or model weights are granted here.
+
+THE MATERIAL IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO MERCHANTABILITY, FITNESS FOR A PARTICULAR
+PURPOSE, AND NON-INFRINGEMENT.

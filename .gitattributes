@@ -1,0 +1,15 @@
+* text=auto
+*.bat text eol=crlf
+*.py text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.docx binary
+*.jpg binary
+*.pt binary
+*.pth binary
+*.ckpt binary
+*.safetensors binary
+*.onnx binary
+*.engine binary

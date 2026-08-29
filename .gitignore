@@ -1,0 +1,74 @@
+# Python environments and bytecode
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test, lint, type-check and coverage caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Packaging and notebook artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+.ipynb_checkpoints/
+node_modules/
+
+# IDE and OS metadata
+.idea/
+.vscode/
+*.code-workspace
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# DefectDock runtime state and local credentials
+.defectdock/
+.env
+.env.*
+!.env.example
+*.local.json
+
+# Local datasets, model artifacts and generated runs
+datasets/
+models/
+outputs/
+runs/
+logs/
+exports/
+services/
+.cache/
+tmp/
+temp/
+
+# Model and accelerator binaries
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.engine
+*.trt
+*.bin
+
+# Temporary and local log files
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+~$*

@@ -1,0 +1,16 @@
+.git
+.github
+.venv
+.defectdock
+apps
+datasets
+docs
+outputs
+tests
+**/__pycache__
+*.pyc
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.engine

@@ -1,0 +1,16 @@
+services:
+  api:
+    build:
+      context: .
+      args:
+        DEFECTDOCK_INSTALL_TRAIN: ${DEFECTDOCK_INSTALL_TRAIN:-0}
+    ports:
+      - "8000:8000"
+    volumes:
+      - defectdock-state:/data/.defectdock
+      - ./datasets:/data/datasets
+      - ./outputs:/data/outputs
+    restart: unless-stopped
+
+volumes:
+  defectdock-state:
