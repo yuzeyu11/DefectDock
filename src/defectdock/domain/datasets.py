@@ -27,6 +27,20 @@ class DatasetImageRecord(BaseModel):
     created_at: str
 
 
+class AnnotationVersionRecord(BaseModel):
+    annotation_version_id: str
+    dataset_id: str
+    source: str
+    format: str
+    root_dir: str
+    manifest_path: str
+    manifest_sha256: str
+    labeled_count: int
+    unlabeled_count: int
+    created_at: str
+    is_current: bool = False
+
+
 class DatasetRecord(BaseModel):
     dataset_id: str
     name: str

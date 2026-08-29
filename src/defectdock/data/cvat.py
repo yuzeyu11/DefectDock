@@ -95,6 +95,7 @@ def import_cvat_yolo_export(
             label_name = f"{Path(record.stored_name).stem}.txt"
             if source is not None:
                 shutil.copy2(source, labels_dir / label_name)
+            copied_label = labels_dir / label_name
             manifest_images.append(
                 {
                     "image_id": record.image_id,
@@ -102,6 +103,7 @@ def import_cvat_yolo_export(
                     "stored_name": record.stored_name,
                     "sha256": record.sha256,
                     "label": f"labels/{label_name}" if source is not None else None,
+                    "label_sha256": _sha256(copied_label) if source is not None else None,
                 }
             )
 

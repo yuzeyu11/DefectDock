@@ -11,31 +11,33 @@ from typing import Iterable
 
 import yaml
 
-from defectdock.domain import DatasetImageRecord, DatasetRecord, DatasetStatus
+from defectdock.domain import AnnotationVersionRecord, DatasetImageRecord, DatasetRecord, DatasetStatus
 
 
 def build_training_snapshot(
     dataset: DatasetRecord,
     images: Iterable[DatasetImageRecord],
+    annotation_version: AnnotationVersionRecord,
     *,
     val_ratio: float = 0.2,
     seed: int = 42,
 ) -> dict:
-    """Create deterministic train/val trees from the latest annotation version."""
+    """Create deterministic train/val trees from an explicit annotation version."""
     if dataset.status != DatasetStatus.FROZEN:
         raise ValueError("Dataset must be frozen before creating a training snapshot")
     if not 0.05 <= val_ratio <= 0.5:
         raise ValueError("val_ratio must be between 0.05 and 0.5")
 
     dataset_root = Path(dataset.root_dir).resolve()
-    versions_root = dataset_root / "annotations" / "versions"
-    versions = sorted(path for path in versions_root.iterdir() if path.is_dir()) if versions_root.is_dir() else []
-    if not versions:
-        raise ValueError("Dataset has no synchronized annotation version")
-    annotation_version = versions[-1]
-    annotation_manifest = json.loads(
-        (annotation_version / "manifest.json").read_text(encoding="utf-8")
-    )
+    if annotation_version.dataset_id != dataset.dataset_id:
+        raise ValueError("Annotation version does not belong to the dataset")
+    annotation_root = Path(annotation_version.root_dir).resolve()
+    if not annotation_root.is_relative_to(dataset_root):
+        raise ValueError("Annotation version is outside the dataset directory")
+    annotation_manifest_path = Path(annotation_version.manifest_path).resolve()
+    if _file_sha256(annotation_manifest_path) != annotation_version.manifest_sha256:
+        raise ValueError("Annotation manifest changed after version registration")
+    annotation_manifest = json.loads(annotation_manifest_path.read_text(encoding="utf-8"))
     if annotation_manifest.get("classes") != dataset.labels:
         raise ValueError("Annotation classes no longer match the dataset")
 
@@ -46,9 +48,14 @@ def build_training_snapshot(
         record = records.get(item.get("image_id"))
         if not label_relative or record is None:
             continue
-        label_path = annotation_version / label_relative
+        label_path = (annotation_root / label_relative).resolve()
+        if not label_path.is_relative_to(annotation_root):
+            raise ValueError("Annotation label is outside its version directory")
         image_path = dataset_root / "images" / record.stored_name
         if label_path.is_file() and image_path.is_file():
+            expected_label_sha256 = item.get("label_sha256")
+            if not expected_label_sha256 or _file_sha256(label_path) != expected_label_sha256:
+                raise ValueError(f"Annotation label changed after version registration: {label_path.name}")
             labeled.append((record, label_path))
     if len(labeled) < 2:
         raise ValueError("At least two labeled images are required for separate train and val splits")
@@ -59,7 +66,7 @@ def build_training_snapshot(
     split_signature = hashlib.sha256(
         json.dumps(
             {
-                "annotation": annotation_version.name,
+                "annotation": annotation_version.annotation_version_id,
                 "seed": seed,
                 "val_ratio": val_ratio,
                 "images": [record.sha256 for record, _ in labeled],
@@ -67,7 +74,7 @@ def build_training_snapshot(
             sort_keys=True,
         ).encode("utf-8")
     ).hexdigest()[:12]
-    snapshot_id = f"{annotation_version.name}-s{seed}-{split_signature}"
+    snapshot_id = f"{annotation_version.annotation_version_id}-s{seed}-{split_signature}"
     snapshots_root = dataset_root / "training" / "snapshots"
     snapshot_dir = snapshots_root / snapshot_id
     manifest_path = snapshot_dir / "manifest.json"
@@ -120,7 +127,8 @@ def build_training_snapshot(
             "snapshot_id": snapshot_id,
             "dataset_id": dataset.dataset_id,
             "dataset_name": dataset.name,
-            "annotation_version": annotation_version.name,
+            "annotation_version": annotation_version.annotation_version_id,
+            "annotation_manifest_sha256": annotation_version.manifest_sha256,
             "classes": dataset.labels,
             "seed": seed,
             "val_ratio": val_ratio,

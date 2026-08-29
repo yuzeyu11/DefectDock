@@ -178,7 +178,7 @@ defectdock/
 
 DefectDock 原创代码当前采用 [专有许可证](LICENSE)，在权利人明确开源策略之前不得对外复制或商业分发。依赖项保留各自许可证，关键边界见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 与 [docs/licensing.md](docs/licensing.md)。
 
-本仓库明确排除 Ultralytics Python 包、Ultralytics 源代码、训练脚本和预训练权重。CI 中的许可证边界检查会阻止相关运行时导入或依赖再次进入主链路。任何对外发布仍必须在冻结依赖后执行 SBOM、漏洞和许可证扫描，并由法律顾问审核最终分发组合。
+本仓库明确排除 Ultralytics Python 包、Ultralytics 源代码、训练脚本和预训练权重。CI 中的许可证边界检查会阻止相关运行时导入或依赖再次进入主链路。发布证据工作流会针对锁定的 Python 与前端生产依赖生成 SBOM、漏洞报告、许可证清单及校验和；流程与人工复核边界见 [发布证据说明](docs/release-evidence.md)。最终分发组合仍须由法律顾问审核。
 
 ## 路线图
 
@@ -187,6 +187,9 @@ DefectDock 原创代码当前采用 [专有许可证](LICENSE)，在权利人明
 - [x] TorchVision 训练、检查点和统一推理
 - [x] React + TypeScript 工作台骨架
 - [x] 单机单 GPU 后台任务队列、协作式取消和重启状态恢复
+- [x] Alembic 数据库迁移、升级前备份、失败恢复和显式标注版本外键
+- [x] Python/前端 SBOM、漏洞与许可证发布证据工作流
+- [x] 轻量容器固定基础镜像摘要、严格使用 `uv.lock`，并移除运行时构建工具
 - [ ] 持久化任务队列、自动重试和多设备资源调度
 - [ ] 参考 Geti 建立项目、数据版本、模型版本和部署版本的完整追溯关系
 - [ ] 参考 Anomalib Studio 增加异常检测任务、热力图和阈值验收

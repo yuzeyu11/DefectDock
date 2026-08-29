@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import shutil
@@ -27,7 +28,7 @@ from defectdock.data import (
 )
 from defectdock.data.cv import build_training_snapshot, check_dataset, compute_stats
 from defectdock.db import DatasetStore, RunStore
-from defectdock.domain import new_dataset_id
+from defectdock.domain import AnnotationVersionRecord, new_dataset_id
 from defectdock.engines import EngineResult, build_plan, run_training
 from defectdock.inference import DetectionInferenceService
 from defectdock.integrations import CvatClient, CvatSettings
@@ -42,6 +43,7 @@ MAX_INFERENCE_UPLOAD_BYTES = 25 * 1024 * 1024
 class SnapshotRequest(BaseModel):
     val_ratio: float = Field(default=0.2, ge=0.05, le=0.5)
     seed: int = Field(default=42, ge=0)
+    annotation_version_id: str | None = Field(default=None, min_length=1, max_length=160)
 
 
 def create_app(
@@ -193,8 +195,18 @@ def create_app(
             images = app.state.datasets.list_images(dataset_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        boxes_by_image = _load_latest_boxes(dataset.root_dir, images)
+        try:
+            current_annotation = app.state.datasets.get_current_annotation_version(dataset_id)
+        except KeyError:
+            current_annotation = None
+        try:
+            boxes_by_image = _load_annotation_boxes(current_annotation, images)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         payload = _dataset_payload(dataset, app.state.cvat)
+        payload["current_annotation_version"] = (
+            current_annotation.model_dump(mode="json") if current_annotation else None
+        )
         payload["images"] = [
             {
                 **record.model_dump(mode="json"),
@@ -222,9 +234,44 @@ def create_app(
         version_dir = Path(dataset.root_dir) / "annotations" / "versions" / version_id
         try:
             imported = await import_uploaded_annotations(dataset, images, files, version_dir)
+            version = app.state.datasets.register_annotation_version(
+                dataset_id,
+                version_id,
+                source="direct_upload",
+                format="normalized-detection-text-v1",
+                root_dir=version_dir,
+                manifest_path=imported["manifest_path"],
+                labeled_count=imported["labeled_count"],
+                unlabeled_count=imported["unlabeled_count"],
+            )
         except (OSError, ValueError) as exc:
+            shutil.rmtree(version_dir, ignore_errors=True)
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return {"dataset": _dataset_payload(dataset, app.state.cvat), "annotation_version": imported}
+        return {
+            "dataset": _dataset_payload(dataset, app.state.cvat),
+            "annotation_version": version.model_dump(mode="json"),
+        }
+
+    @app.get("/api/datasets/{dataset_id}/annotation-versions")
+    def list_annotation_versions(
+        dataset_id: str,
+        limit: int = Query(default=100, ge=1, le=1000),
+    ) -> list[dict]:
+        try:
+            versions = app.state.datasets.list_annotation_versions(dataset_id, limit)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return [version.model_dump(mode="json") for version in versions]
+
+    @app.put("/api/datasets/{dataset_id}/annotation-versions/{version_id}/current")
+    def select_annotation_version(dataset_id: str, version_id: str) -> dict:
+        try:
+            version = app.state.datasets.set_current_annotation_version(dataset_id, version_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return version.model_dump(mode="json")
 
     @app.get("/api/datasets/{dataset_id}/images/{image_id}", include_in_schema=False)
     def get_dataset_image(dataset_id: str, image_id: str) -> FileResponse:
@@ -260,9 +307,17 @@ def create_app(
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         try:
+            annotation_version = (
+                app.state.datasets.get_annotation_version(
+                    dataset_id, request.annotation_version_id
+                )
+                if request.annotation_version_id
+                else app.state.datasets.get_current_annotation_version(dataset_id)
+            )
             snapshot = build_training_snapshot(
                 dataset,
                 images,
+                annotation_version,
                 val_ratio=request.val_ratio,
                 seed=request.seed,
             )
@@ -270,6 +325,8 @@ def create_app(
             if not quality.ok:
                 raise ValueError("Generated snapshot failed its dataset quality gate")
             stats = compute_stats(snapshot["data_yaml"])
+        except KeyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except (OSError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {
@@ -332,8 +389,19 @@ def create_app(
         try:
             export = app.state.cvat.export_dataset(dataset.cvat_task_id, archive_path)
             imported = import_cvat_yolo_export(archive_path, dataset, images, version_dir)
+            version = app.state.datasets.register_annotation_version(
+                dataset_id,
+                sync_id,
+                source="cvat",
+                format="YOLO 1.1",
+                root_dir=version_dir,
+                manifest_path=imported["manifest_path"],
+                labeled_count=imported["labeled_count"],
+                unlabeled_count=imported["unlabeled_count"],
+            )
             dataset = app.state.datasets.freeze_dataset(dataset_id)
         except ValueError as exc:
+            shutil.rmtree(version_dir, ignore_errors=True)
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except (RuntimeError, OSError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -341,7 +409,7 @@ def create_app(
             "dataset": _dataset_payload(dataset, app.state.cvat),
             "task_status": task_status,
             "export": export,
-            "annotation_version": imported,
+            "annotation_version": version.model_dump(mode="json"),
         }
 
     @app.get("/api/datasets/{dataset_id}/cvat-status")
@@ -527,28 +595,34 @@ def _training_stack_available() -> bool:
     )
 
 
-def _load_latest_boxes(root_dir: str, images) -> dict[str, list[dict]]:
-    """从最新一版 CVAT 标注（annotations/versions/<id>/labels/）读每张图的框。
+def _load_annotation_boxes(
+    annotation_version: AnnotationVersionRecord | None, images
+) -> dict[str, list[dict]]:
+    """从数据库明确选中的标注版本读取每张图片的框。
 
     返回 ``{image_id: [{"class_id": int, "cx": float, "cy": float, "w": float, "h": float}]}``；
     找不到版本或标签文件时返回空列表。
     """
     result: dict[str, list[dict]] = {img.image_id: [] for img in images}
-    ann_root = Path(root_dir) / "annotations" / "versions"
-    if not ann_root.is_dir():
+    if annotation_version is None:
         return result
-    versions = [p for p in ann_root.iterdir() if p.is_dir()]
-    if not versions:
-        return result
-    latest = max(versions, key=lambda p: p.name)
-    labels_dir = latest / "labels"
-    if not labels_dir.is_dir():
-        return result
+    manifest_path = Path(annotation_version.manifest_path)
+    if _file_sha256(manifest_path) != annotation_version.manifest_sha256:
+        raise ValueError("Annotation manifest changed after version registration")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_images = {item.get("image_id"): item for item in manifest.get("images", [])}
+    version_root = Path(annotation_version.root_dir)
     for img in images:
-        stem = Path(img.stored_name).stem
-        lbl = labels_dir / f"{stem}.txt"
-        if not lbl.is_file():
+        item = manifest_images.get(img.image_id, {})
+        label_relative = item.get("label")
+        if not label_relative:
             continue
+        lbl = (version_root / label_relative).resolve()
+        if not lbl.is_relative_to(version_root.resolve()) or not lbl.is_file():
+            raise ValueError(f"Annotation label is missing or outside its version: {img.original_name}")
+        expected_hash = item.get("label_sha256")
+        if not expected_hash or _file_sha256(lbl) != expected_hash:
+            raise ValueError(f"Annotation label changed after version registration: {img.original_name}")
         boxes: list[dict] = []
         for line in lbl.read_text(encoding="utf-8").splitlines():
             line = line.strip()
@@ -571,6 +645,14 @@ def _load_latest_boxes(root_dir: str, images) -> dict[str, list[dict]]:
                 continue
         result[img.image_id] = boxes
     return result
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 if __name__ == "__main__":

@@ -136,6 +136,16 @@ class ApiTests(unittest.TestCase):
         )
         self.assertEqual(annotations.status_code, 201, annotations.text)
         self.assertEqual(annotations.json()["annotation_version"]["labeled_count"], 2)
+        version_id = annotations.json()["annotation_version"]["annotation_version_id"]
+        versions = self.client.get(f"/api/datasets/{dataset_id}/annotation-versions")
+        self.assertEqual(versions.status_code, 200, versions.text)
+        self.assertEqual(versions.json()[0]["annotation_version_id"], version_id)
+        self.assertTrue(versions.json()[0]["is_current"])
+        detail = self.client.get(f"/api/datasets/{dataset_id}")
+        self.assertEqual(
+            detail.json()["current_annotation_version"]["annotation_version_id"],
+            version_id,
+        )
 
         frozen = self.client.post(f"/api/datasets/{dataset_id}/freeze")
         self.assertEqual(frozen.status_code, 200, frozen.text)
@@ -146,6 +156,11 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(snapshot_response.status_code, 201, snapshot_response.text)
         snapshot = snapshot_response.json()["snapshot"]
         self.assertEqual(snapshot["image_count"], 2)
+        self.assertEqual(snapshot["annotation_version"], version_id)
+        self.assertEqual(
+            snapshot["annotation_manifest_sha256"],
+            annotations.json()["annotation_version"]["manifest_sha256"],
+        )
         self.assertTrue(snapshot_response.json()["quality"]["ok"])
 
         def fake_runner(config, run_dir, on_event, should_cancel, *, project_root):

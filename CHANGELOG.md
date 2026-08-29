@@ -22,3 +22,10 @@ once the public API reaches `1.0.0`.
 - Added a cross-platform `uv.lock` and a CI lockfile consistency gate.
 - Verified the wheel outside the source tree, a healthy lightweight Docker
   container, and a real CUDA smoke training run on an RTX 2060.
+- Added packaged Alembic migrations with legacy-database backup, failure
+  recovery, restore commands, and explicit annotation-version foreign keys.
+- Added Python and pnpm CycloneDX SBOM, vulnerability, license-policy, evidence
+  hashing, artifact retention, immutable CI action pins, and Dependabot gates.
+- Added a pinned, lockfile-driven Python 3.13/Trixie lightweight image; removed
+  runtime build tools and unnecessary GUI libraries, and separated complete
+  container findings from the fixable high/critical release gate.

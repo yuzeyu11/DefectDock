@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import tempfile
@@ -37,7 +38,7 @@ async def import_uploaded_annotations(
         for stem in {Path(record.original_name).stem.casefold(), Path(record.stored_name).stem.casefold()}:
             aliases.setdefault(stem, []).append(record)
 
-    matched: dict[str, str] = {}
+    matched: dict[str, dict[str, str]] = {}
     try:
         for upload in files:
             filename = Path(upload.filename or "").name
@@ -60,7 +61,10 @@ async def import_uploaded_annotations(
             destination = labels_dir / destination_name
             destination.write_text(text, encoding="utf-8")
             _validate_yolo_label(destination, len(dataset.labels))
-            matched[record.image_id] = f"labels/{destination_name}"
+            matched[record.image_id] = {
+                "path": f"labels/{destination_name}",
+                "sha256": _file_sha256(destination),
+            }
 
         manifest_images = [
             {
@@ -68,7 +72,8 @@ async def import_uploaded_annotations(
                 "original_name": record.original_name,
                 "stored_name": record.stored_name,
                 "sha256": record.sha256,
-                "label": matched.get(record.image_id),
+                "label": matched.get(record.image_id, {}).get("path"),
+                "label_sha256": matched.get(record.image_id, {}).get("sha256"),
             }
             for record in images
         ]
@@ -100,3 +105,11 @@ async def import_uploaded_annotations(
     finally:
         for upload in files:
             await upload.close()
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()

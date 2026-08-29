@@ -8,33 +8,9 @@ from contextlib import closing
 from pathlib import Path
 
 from defectdock.config import RunConfig
+from defectdock.db.migration import upgrade_database
 from defectdock.domain import RunRecord, RunStatus, ensure_transition, new_run_id
 from defectdock.domain.runs import TERMINAL_STATUSES, utc_now
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS runs (
-    run_id TEXT PRIMARY KEY,
-    project TEXT NOT NULL,
-    task TEXT NOT NULL,
-    engine TEXT NOT NULL,
-    model TEXT NOT NULL,
-    dataset TEXT NOT NULL,
-    dataset_version TEXT NOT NULL,
-    config_hash TEXT NOT NULL,
-    config_json TEXT NOT NULL,
-    status TEXT NOT NULL,
-    output_dir TEXT NOT NULL,
-    metrics_json TEXT,
-    error TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    started_at TEXT,
-    finished_at TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_runs_created_at ON runs(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_runs_project ON runs(project, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_runs_config_hash ON runs(config_hash);
-"""
 
 
 class RunStore:
@@ -51,9 +27,7 @@ class RunStore:
         return connection
 
     def _initialize(self) -> None:
-        with closing(self._connect()) as connection:
-            connection.executescript(SCHEMA)
-            connection.commit()
+        upgrade_database(self.path)
 
     def create_run(self, config: RunConfig, output_dir: str | Path, run_id: str | None = None) -> RunRecord:
         run_id = run_id or new_run_id(config.project)

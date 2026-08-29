@@ -14,7 +14,14 @@ import yaml
 
 from defectdock.config import load_run_config
 from defectdock.data.cv import check_dataset, compute_stats, convert_voc_dataset, import_gc10_dataset
-from defectdock.db import RunStore
+from defectdock.db import (
+    RunStore,
+    backup_database,
+    current_revision,
+    head_revision,
+    restore_database,
+    upgrade_database,
+)
 from defectdock.domain import RunStatus, new_run_id
 from defectdock.engines import build_plan, run_training
 from defectdock.inference import DetectionInferenceService
@@ -26,7 +33,9 @@ from defectdock.stream import stream_camera
 
 app = typer.Typer(no_args_is_help=True, help="DefectDock industrial-vision lifecycle CLI")
 data_app = typer.Typer(no_args_is_help=True, help="Inspect and convert detection datasets")
+db_app = typer.Typer(no_args_is_help=True, help="Inspect, migrate, back up, and restore metadata")
 app.add_typer(data_app, name="data")
+app.add_typer(db_app, name="db")
 _runtime_settings: RuntimeSettings | None = None
 
 
@@ -57,6 +66,63 @@ def _settings() -> RuntimeSettings:
 def _store(path: Path | None = None) -> RunStore:
     settings = _settings()
     return RunStore(settings.db_path if path is None else settings.resolve(path))
+
+
+def _db_path(path: Path | None = None) -> Path:
+    settings = _settings()
+    return settings.db_path if path is None else settings.resolve(path)
+
+
+@db_app.command("status")
+def database_status(db_path: Annotated[Path | None, typer.Option("--db")] = None) -> None:
+    """Show the installed and expected database revisions."""
+    path = _db_path(db_path)
+    _json(
+        {
+            "path": str(path),
+            "exists": path.is_file(),
+            "current_revision": current_revision(path),
+            "head_revision": head_revision(path),
+        }
+    )
+
+
+@db_app.command("migrate")
+def database_migrate(db_path: Annotated[Path | None, typer.Option("--db")] = None) -> None:
+    """Upgrade metadata to the latest revision, backing up an existing database first."""
+    _json(upgrade_database(_db_path(db_path)).__dict__)
+
+
+@db_app.command("backup")
+def database_backup(
+    destination: Annotated[Path | None, typer.Option("--output")] = None,
+    db_path: Annotated[Path | None, typer.Option("--db")] = None,
+) -> None:
+    """Create a consistent SQLite backup using the online backup API."""
+    _json({"backup_path": str(backup_database(_db_path(db_path), destination))})
+
+
+@db_app.command("restore")
+def database_restore(
+    backup_path: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    confirmed: Annotated[bool, typer.Option("--yes", help="Confirm replacement of the live DB")] = False,
+    db_path: Annotated[Path | None, typer.Option("--db")] = None,
+) -> None:
+    """Restore a backup after first preserving the current live database."""
+    if not confirmed:
+        typer.echo("Restore replaces live metadata; pass --yes to confirm.", err=True)
+        raise typer.Exit(code=2)
+    path = _db_path(db_path)
+    safety_backup = backup_database(path) if path.is_file() else None
+    restore_database(path, backup_path)
+    _json(
+        {
+            "restored_from": str(backup_path.resolve()),
+            "path": str(path),
+            "pre_restore_backup": str(safety_backup) if safety_backup else None,
+            "current_revision": current_revision(path),
+        }
+    )
 
 
 @data_app.command("check")

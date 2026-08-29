@@ -14,6 +14,8 @@ Key runtime boundaries:
 | FastAPI | REST API framework | MIT | No; installed as a package |
 | OpenCV | camera/video integration | Apache-2.0 | No; installed as a package |
 | CVAT SDK | optional annotation integration | MIT | No; optional package |
+| Alembic / SQLAlchemy | SQLite schema migration | MIT | No; installed as packages |
+| React / React DOM | workbench runtime | MIT | No; installed as packages |
 
 The built-in training and inference path does not depend on the Ultralytics
 Python package, its source code, or its pretrained weights. The normalized
@@ -21,6 +23,8 @@ Python package, its source code, or its pretrained weights. The normalized
 interchange format; a data layout is not a runtime dependency.
 
 Canonical license sources are linked from [docs/licensing.md](docs/licensing.md).
+The complete version-specific machine-readable inventory is generated per
+release as described in [docs/release-evidence.md](docs/release-evidence.md).
 
 Geti, AWS DDA and Anomalib Studio are currently design references, not bundled
 dependencies. They therefore are not listed as distributed third-party

@@ -1,0 +1,175 @@
+name: Release evidence
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - pyproject.toml
+      - uv.lock
+      - apps/web/package.json
+      - apps/web/pnpm-lock.yaml
+      - Dockerfile
+      - scripts/check_dependency_licenses.py
+      - .github/workflows/release-evidence.yml
+
+permissions:
+  contents: read
+
+jobs:
+  python-evidence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.13"
+      - run: uv sync --locked --extra dev
+      - name: Export locked release inventory
+        run: |
+          mkdir -p build/evidence/python
+          uv --quiet export --frozen --all-extras --no-extra dev --no-dev --no-emit-project \
+            --format requirements.txt \
+            --output-file build/evidence/python/requirements-release.txt
+          uv --preview-features sbom-export --quiet export --frozen \
+            --all-extras --no-extra dev --no-dev --no-emit-project \
+            --format cyclonedx1.5 \
+            --output-file build/evidence/python/sbom.cdx.json
+      - name: Generate Python license report
+        run: |
+          uv run --locked --extra dev licensecheck --license apache-2.0 \
+            --requirements-paths build/evidence/python/requirements-release.txt \
+            --format json --file build/evidence/python/licenses.json
+          python scripts/check_dependency_licenses.py build/evidence/python/licenses.json
+      - name: Audit locked Python dependencies
+        id: python_audit
+        continue-on-error: true
+        run: |
+          uv run --locked --extra dev pip-audit \
+            --requirement build/evidence/python/requirements-release.txt \
+            --require-hashes --strict --progress-spinner off \
+            --format json --output build/evidence/python/vulnerabilities.json
+      - name: Hash Python evidence
+        if: always()
+        run: |
+          cd build/evidence/python
+          sha256sum licenses.json requirements-release.txt sbom.cdx.json vulnerabilities.json \
+            > SHA256SUMS
+      - name: Archive Python release evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: defectdock-python-release-evidence
+          path: build/evidence/python
+          if-no-files-found: error
+          retention-days: 90
+      - name: Enforce Python vulnerability gate
+        if: steps.python_audit.outcome == 'failure'
+        run: exit 1
+
+  web-evidence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 11.19.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+      - run: pnpm --dir apps/web install --frozen-lockfile
+      - name: Generate frontend SBOM and license report
+        run: |
+          mkdir -p build/evidence/web
+          cd apps/web
+          pnpm sbom --sbom-format cyclonedx --sbom-spec-version 1.6 \
+            --sbom-type application --prod --lockfile-only \
+            --out ../../build/evidence/web/sbom.cdx.json
+          pnpm licenses list --prod --json | tee ../../build/evidence/web/licenses.json
+          cd ../..
+          python3 scripts/check_dependency_licenses.py build/evidence/web/licenses.json
+      - name: Audit frontend dependencies
+        id: web_audit
+        continue-on-error: true
+        run: pnpm --dir apps/web audit --audit-level high --json | tee build/evidence/web/vulnerabilities.json
+      - name: Hash frontend evidence
+        if: always()
+        run: |
+          cd build/evidence/web
+          sha256sum licenses.json sbom.cdx.json vulnerabilities.json > SHA256SUMS
+      - name: Archive frontend release evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: defectdock-web-release-evidence
+          path: build/evidence/web
+          if-no-files-found: error
+          retention-days: 90
+      - name: Enforce frontend vulnerability gate
+        if: steps.web_audit.outcome == 'failure'
+        run: exit 1
+
+  container-evidence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Build lightweight release image
+        run: |
+          mkdir -p build/evidence/container
+          docker build --pull --tag defectdock:evidence .
+          docker image inspect defectdock:evidence --format '{{.Id}}' \
+            > build/evidence/container/image-id.txt
+      - name: Generate container SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: defectdock:evidence
+          format: cyclonedx-json
+          output-file: build/evidence/container/sbom.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Record all container vulnerabilities
+        id: container_scan_all
+        continue-on-error: true
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: defectdock:evidence
+          fail-build: false
+          severity-cutoff: negligible
+          output-format: json
+          output-file: build/evidence/container/vulnerabilities-all.json
+      - name: Gate fixable high and critical container vulnerabilities
+        id: container_scan_gate
+        continue-on-error: true
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: defectdock:evidence
+          fail-build: true
+          only-fixed: true
+          severity-cutoff: high
+          output-format: json
+          output-file: build/evidence/container/vulnerabilities-fixable.json
+      - name: Hash container evidence
+        if: always()
+        run: |
+          cd build/evidence/container
+          sha256sum image-id.txt sbom.cdx.json vulnerabilities-all.json \
+            vulnerabilities-fixable.json > SHA256SUMS
+      - name: Archive container release evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: defectdock-container-release-evidence
+          path: build/evidence/container
+          if-no-files-found: error
+          retention-days: 90
+      - name: Enforce container vulnerability gate
+        if: steps.container_scan_gate.outcome == 'failure'
+        run: exit 1

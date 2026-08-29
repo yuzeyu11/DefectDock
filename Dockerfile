@@ -1,26 +1,32 @@
-FROM python:3.12-slim AS runtime
+FROM python:3.13-slim@sha256:7ce4b6dfe35e55397b7cda544f8a13f191b7ae28dc5aad71fe664dbc9bc2623f AS runtime
 
 ARG DEFECTDOCK_INSTALL_TRAIN=0
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
     DEFECTDOCK_WORKSPACE=/data
 
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y libglib2.0-0 libgl1 \
+    && apt-get upgrade --no-install-recommends -y \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml README.md LICENSE THIRD_PARTY_NOTICES.md ./
+COPY pyproject.toml uv.lock README.md LICENSE THIRD_PARTY_NOTICES.md ./
 COPY src ./src
-RUN python -m pip install --upgrade pip \
+RUN python -m pip install --no-cache-dir uv==0.11.13 \
     && if [ "$DEFECTDOCK_INSTALL_TRAIN" = "1" ]; then \
-         python -m pip install ".[train]"; \
+         uv sync --locked --no-dev --no-editable --extra train; \
        else \
-         python -m pip install "."; \
-       fi
+         uv sync --locked --no-dev --no-editable; \
+       fi \
+    && uv cache clean \
+    && python -m pip uninstall --yes uv
+
+ENV PATH="/app/.venv/bin:$PATH"
 
 RUN useradd --create-home --uid 10001 defectdock \
     && mkdir -p /data/.defectdock /data/datasets /data/outputs \
