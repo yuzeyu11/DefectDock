@@ -49,7 +49,7 @@ outputs/
 runs/
 logs/
 exports/
-services/
+/services/
 .cache/
 tmp/
 temp/
