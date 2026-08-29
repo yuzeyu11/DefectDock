@@ -19,5 +19,6 @@ once the public API reaches `1.0.0`.
   hashed training snapshots.
 - Added run provenance manifests for code, dependencies, datasets, hardware and
   pretrained weights; corrected FDR metric naming.
+- Added a cross-platform `uv.lock` and a CI lockfile consistency gate.
 - Verified the wheel outside the source tree, a healthy lightweight Docker
   container, and a real CUDA smoke training run on an RTX 2060.

@@ -65,6 +65,12 @@ python -m pip install --upgrade pip
 pip install -e ".[train]"
 ```
 
+仓库同时提交跨平台 `uv.lock`。需要严格复现已锁定依赖时，可使用：
+
+```bash
+uv sync --locked --extra train --extra dev
+```
+
 检查环境：
 
 ```bash
