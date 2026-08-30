@@ -4,6 +4,7 @@ services:
       context: .
       args:
         DEFECTDOCK_INSTALL_TRAIN: ${DEFECTDOCK_INSTALL_TRAIN:-0}
+        DEFECTDOCK_BUILD_REVISION: ${DEFECTDOCK_BUILD_REVISION:-unknown}
     ports:
       - "8000:8000"
     volumes:

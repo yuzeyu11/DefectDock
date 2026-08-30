@@ -27,6 +27,11 @@ docker compose -f compose.yaml -f compose.gpu.yaml build api
 docker compose -f compose.yaml -f compose.gpu.yaml up api
 ```
 
+For a traceable release build, set `DEFECTDOCK_BUILD_REVISION` to the full Git
+commit before building. The value is validated before it is copied into a run
+manifest and is also written to the OCI `org.opencontainers.image.revision`
+label. GitHub GPU acceptance injects `GITHUB_SHA` automatically.
+
 The GPU override installs the locked `train` extra and requests all available
 GPUs through the Compose `gpus` field. The API remains available on port 8000
 and uses the same `/data` persistence contract as the lightweight image.
@@ -57,4 +62,3 @@ an SBOM and both vulnerability reports, and archives checksummed evidence.
 Before distributing a GPU image, record the exact image digest, GPU model,
 compute capability, driver, CUDA build, test result, SBOM, vulnerability
 decision, and CUDA/NVIDIA license review beside the release.
-

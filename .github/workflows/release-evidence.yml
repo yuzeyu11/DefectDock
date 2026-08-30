@@ -124,7 +124,8 @@ jobs:
       - name: Build lightweight release image
         run: |
           mkdir -p build/evidence/container
-          docker build --pull --tag defectdock:evidence .
+          docker build --pull --build-arg DEFECTDOCK_BUILD_REVISION=${GITHUB_SHA} \
+            --tag defectdock:evidence .
           docker image inspect defectdock:evidence --format '{{.Id}}' \
             > build/evidence/container/image-id.txt
       - name: Generate container SBOM

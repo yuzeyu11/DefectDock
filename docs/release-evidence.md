@@ -35,6 +35,10 @@ a self-hosted NVIDIA runner, in addition to checking Torch CUDA visibility and
 running a one-epoch training smoke. See `docs/gpu-delivery.md` for the required
 runner labels and hardware acceptance boundary.
 
+Both container workflows inject the full Git commit into the OCI image label
+and `DEFECTDOCK_BUILD_REVISION`, allowing containerized training manifests to
+retain source provenance even though `.git` is excluded from the build context.
+
 ## Enforced policy
 
 - GitHub Actions are pinned to immutable commit SHAs.

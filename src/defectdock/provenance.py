@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import importlib.metadata
 import json
+import os
 import platform
+import re
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -26,6 +28,8 @@ TRACKED_DISTRIBUTIONS = (
     "typer",
     "uvicorn",
 )
+BUILD_REVISION_ENV = "DEFECTDOCK_BUILD_REVISION"
+COMMIT_PATTERN = re.compile(r"^[0-9a-fA-F]{7,64}$")
 
 
 def write_run_manifest(
@@ -86,7 +90,14 @@ def file_sha256(path: str | Path) -> str:
 def _git_state(project_root: Path) -> dict:
     repository_root = _find_git_root(project_root)
     if repository_root is None:
-        return {"repository": False, "root": None, "commit": None, "dirty": None}
+        embedded_revision = _embedded_build_revision()
+        return {
+            "repository": False,
+            "root": None,
+            "commit": embedded_revision,
+            "dirty": None,
+            "source": "build_environment" if embedded_revision else "unavailable",
+        }
     try:
         commit = _git(repository_root, "rev-parse", "HEAD") or None
     except (OSError, subprocess.SubprocessError):
@@ -101,7 +112,15 @@ def _git_state(project_root: Path) -> dict:
         "root": str(repository_root),
         "commit": commit,
         "dirty": dirty,
+        "source": "git",
     }
+
+
+def _embedded_build_revision() -> str | None:
+    revision = os.getenv(BUILD_REVISION_ENV, "").strip()
+    if not COMMIT_PATTERN.fullmatch(revision):
+        return None
+    return revision.casefold()
 
 
 def _find_git_root(project_root: Path) -> Path | None:

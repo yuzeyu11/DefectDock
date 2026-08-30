@@ -314,6 +314,7 @@ DefectDock 的方向和核心抽象值得继续：它应当成为一套围绕工
 - 轻量 Docker 镜像已构建，临时容器的 API 和 Docker 健康状态均为 `healthy`；
 - RTX 2060 上使用 `device=cuda` 完成 1 epoch 合成数据端到端训练，生成 `best.ckpt`、`last.ckpt`、事件、指标和运行清单。
 - 已构建锁定依赖的 CUDA 13 GPU 镜像，并在 Docker NVIDIA runtime 内以 PyTorch 2.13/TorchVision 0.28 对 RTX 2060 完成运行时探针和 1 epoch 端到端训练；GPU Compose 覆盖与自托管验收工作流已固化。
+- 容器镜像通过 OCI label 与 `DEFECTDOCK_BUILD_REVISION` 注入 Git 提交，容器内训练 manifest 在不携带 `.git` 的情况下仍可记录代码版本；无效 revision 会被拒绝。
 - 引入 Alembic 正式迁移链；旧库升级前自动使用 SQLite 在线备份，迁移失败自动恢复，并提供 `defectdock db status/migrate/backup/restore` 运维命令；
 - 标注版本和数据集当前标注头已建立显式外键，快照和预览只接受数据库选定版本，并校验标注 manifest 哈希；
 - Python 锁定依赖与前端生产依赖均已建立 CycloneDX SBOM、漏洞报告、许可证清单、AGPL/Ultralytics 门禁、证据校验和与 CI 制品归档流程；本机对应扫描未发现已知漏洞。
@@ -321,7 +322,7 @@ DefectDock 的方向和核心抽象值得继续：它应当成为一套围绕工
 
 ### 仍未完成，不能标记为 P0 全部完成
 
-- Git 基线建立后需要在后续真实运行中持续验证 `run.manifest.json` 的提交 ID 与干净状态；
+- 源码树运行可记录 Git 提交和 dirty 状态，容器运行可记录构建提交但无法推断构建后的 dirty 状态；发布仍需校验镜像 label、manifest 提交和制品摘要一致；
 - 尚未用代表客户业务分布的真实数据完成训练、精度、误报警、性能和稳定性验收；合成烟雾测试只证明链路可执行；
 - GPU 镜像已在 RTX 2060、驱动 595.97 上通过，但仍需针对客户最终 GPU/驱动组合复验，并完成代表性真实数据验收；
 - 网络安全模式、模型注册/原子回滚、ONNX 导出和前端完整操作面仍属于后续阶段；

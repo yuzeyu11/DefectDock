@@ -16,6 +16,7 @@ jobs:
         run: |
           mkdir -p build/evidence/gpu
           docker build --build-arg DEFECTDOCK_INSTALL_TRAIN=1 \
+            --build-arg DEFECTDOCK_BUILD_REVISION=${GITHUB_SHA} \
             --tag defectdock:gpu-${GITHUB_SHA} .
           docker image inspect defectdock:gpu-${GITHUB_SHA} --format '{{.Id}}' \
             > build/evidence/gpu/image-id.txt
@@ -79,4 +80,3 @@ jobs:
       - name: Enforce GPU vulnerability gate
         if: steps.gpu_scan_gate.outcome == 'failure'
         run: exit 1
-

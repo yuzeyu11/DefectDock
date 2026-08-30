@@ -31,3 +31,6 @@ once the public API reaches `1.0.0`.
   container findings from the fixable high/critical release gate.
 - Added a locked CUDA 13 GPU image variant, Compose override, runtime probe,
   self-hosted GPU evidence workflow, and verified one-epoch RTX 2060 training.
+- Embedded validated Git revisions in OCI labels and container training
+  manifests, and separated dependency installation from project installation
+  to keep subsequent GPU rebuilds fast.
