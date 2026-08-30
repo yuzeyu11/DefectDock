@@ -1,77 +1,204 @@
-import { useEffect, useState } from 'react'
-
-type Health = {
-  status: string
-  version: string
-  dataset_upload_enabled: boolean
-  inference_ready: boolean
-}
-
-type Run = {
-  run_id: string
-  project: string
-  model: string
-  status: string
-  created_at: string
-}
-
-type Config = {
-  name: string
-  project: string
-  model: string
-  dataset: { version: string }
-}
-
-const stages = [
-  { number: '01', title: '数据接入', note: '上传、去重、版本冻结' },
-  { number: '02', title: '标注协同', note: 'CVAT 任务与同步' },
-  { number: '03', title: '训练验收', note: '配置、指标与漏检分析' },
-  { number: '04', title: '部署运行', note: '模型激活与现场输入' },
-]
+import { useCallback, useEffect, useState } from 'react'
+import { ApiError, api } from './api'
+import {
+  CreateDatasetDialog,
+  DatasetList,
+  DatasetWorkspace,
+  Feedback,
+  InferenceWorkspace,
+  Overview,
+  RunDetail,
+  RunList,
+  SectionTitle,
+  TrainingForm,
+  type CreateDatasetInput,
+} from './components'
+import type {
+  Dataset,
+  DatasetDetail,
+  Health,
+  InferenceStatus,
+  Run,
+  RunArtifacts,
+  RunConfig,
+  RunEvent,
+  SnapshotResult,
+} from './types'
 
 function App() {
   const [health, setHealth] = useState<Health | null>(null)
+  const [datasets, setDatasets] = useState<Dataset[]>([])
   const [runs, setRuns] = useState<Run[]>([])
-  const [configs, setConfigs] = useState<Config[]>([])
+  const [inference, setInference] = useState<InferenceStatus | null>(null)
+  const [selectedDatasetId, setSelectedDatasetId] = useState<string | null>(null)
+  const [datasetDetail, setDatasetDetail] = useState<DatasetDetail | null>(null)
+  const [snapshot, setSnapshot] = useState<SnapshotResult | null>(null)
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
+  const [selectedRun, setSelectedRun] = useState<Run | null>(null)
+  const [runEvents, setRunEvents] = useState<RunEvent[]>([])
+  const [artifacts, setArtifacts] = useState<RunArtifacts | null>(null)
+  const [showCreate, setShowCreate] = useState(false)
+  const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [message, setMessage] = useState<string | null>(null)
+
+  const refreshOverview = useCallback(async (quiet = false) => {
+    try {
+      const [nextHealth, nextDatasets, nextRuns, nextInference] = await Promise.all([
+        api.health(),
+        api.listDatasets(),
+        api.listRuns(),
+        api.inferenceStatus(),
+      ])
+      setHealth(nextHealth)
+      setDatasets(nextDatasets)
+      setRuns(nextRuns)
+      setInference(nextInference)
+      setSelectedDatasetId((current) => current ?? nextDatasets[0]?.dataset_id ?? null)
+      setSelectedRunId((current) => current ?? nextRuns[0]?.run_id ?? null)
+      if (!quiet) setError(null)
+    } catch (cause) {
+      if (!quiet) setError(toMessage(cause))
+    }
+  }, [])
+
+  const refreshDataset = useCallback(async (datasetId: string) => {
+    try {
+      setDatasetDetail(await api.dataset(datasetId))
+    } catch (cause) {
+      setError(toMessage(cause))
+    }
+  }, [])
+
+  const refreshRun = useCallback(async (runId: string) => {
+    try {
+      const [record, events, runArtifacts] = await Promise.all([
+        api.run(runId),
+        api.runEvents(runId),
+        api.runArtifacts(runId),
+      ])
+      setSelectedRun(record)
+      setRunEvents(events)
+      setArtifacts(runArtifacts)
+    } catch (cause) {
+      setError(toMessage(cause))
+    }
+  }, [])
 
   useEffect(() => {
-    const load = async () => {
-      try {
-        const [healthResponse, runsResponse, configsResponse] = await Promise.all([
-          fetch('/api/health'),
-          fetch('/api/runs?limit=5'),
-          fetch('/api/configs/examples'),
-        ])
-        if (![healthResponse, runsResponse, configsResponse].every((item) => item.ok)) {
-          throw new Error('API response was not successful')
-        }
-        setHealth((await healthResponse.json()) as Health)
-        setRuns((await runsResponse.json()) as Run[])
-        setConfigs((await configsResponse.json()) as Config[])
-      } catch {
-        setError('后端尚未连接。启动 DefectDock API 后刷新页面。')
-      }
+    void refreshOverview()
+    const timer = window.setInterval(() => void refreshOverview(true), 5000)
+    return () => window.clearInterval(timer)
+  }, [refreshOverview])
+
+  useEffect(() => {
+    if (selectedDatasetId) void refreshDataset(selectedDatasetId)
+  }, [refreshDataset, selectedDatasetId])
+
+  useEffect(() => {
+    if (!selectedRunId) return
+    void refreshRun(selectedRunId)
+    const timer = window.setInterval(() => void refreshRun(selectedRunId), 3000)
+    return () => window.clearInterval(timer)
+  }, [refreshRun, selectedRunId])
+
+  const perform = async (label: string, action: () => Promise<void>) => {
+    setBusy(label)
+    setError(null)
+    setMessage(null)
+    try {
+      await action()
+    } catch (cause) {
+      setError(toMessage(cause))
+    } finally {
+      setBusy(null)
     }
-    void load()
-  }, [])
+  }
+
+  const createDataset = async (input: CreateDatasetInput) => {
+    await perform('create-dataset', async () => {
+      const result = await api.createDataset(input.name, input.scene, input.labels, input.files)
+      setShowCreate(false)
+      setSelectedDatasetId(result.dataset.dataset_id)
+      setSnapshot(null)
+      await refreshOverview(true)
+      await refreshDataset(result.dataset.dataset_id)
+      setMessage(`数据集“${result.dataset.name}”已创建，可继续上传标注。`)
+    })
+  }
+
+  const uploadAnnotations = async (files: File[]) => {
+    if (!selectedDatasetId || files.length === 0) return
+    await perform('annotations', async () => {
+      await api.uploadAnnotations(selectedDatasetId, files)
+      await refreshDataset(selectedDatasetId)
+      setMessage(`已导入 ${files.length} 个标注文件并建立新版本。`)
+    })
+  }
+
+  const freezeAndSnapshot = async () => {
+    if (!selectedDatasetId) return
+    await perform('snapshot', async () => {
+      if (datasetDetail?.status !== 'frozen') await api.freezeDataset(selectedDatasetId)
+      const result = await api.createSnapshot(selectedDatasetId)
+      setSnapshot(result)
+      await refreshOverview(true)
+      await refreshDataset(selectedDatasetId)
+      setMessage('不可变训练快照已生成，可提交训练。')
+      document.querySelector('#training')?.scrollIntoView({ behavior: 'smooth' })
+    })
+  }
+
+  const submitTraining = async (config: RunConfig) => {
+    await perform('submit-run', async () => {
+      const record = await api.submitRun(config)
+      setSelectedRunId(record.run_id)
+      await refreshOverview(true)
+      setMessage(`训练 ${record.run_id} 已进入队列。`)
+      document.querySelector('#runs')?.scrollIntoView({ behavior: 'smooth' })
+    })
+  }
+
+  const cancelRun = async () => {
+    if (!selectedRunId) return
+    await perform('cancel-run', async () => {
+      await api.cancelRun(selectedRunId)
+      await refreshRun(selectedRunId)
+      await refreshOverview(true)
+      setMessage('已发送取消请求。')
+    })
+  }
+
+  const activateRun = async () => {
+    if (!selectedRunId) return
+    await perform('activate-run', async () => {
+      await api.activateRun(selectedRunId)
+      await refreshOverview(true)
+      setMessage('模型已激活，推理工作区现在可以使用。')
+      document.querySelector('#inference')?.scrollIntoView({ behavior: 'smooth' })
+    })
+  }
+
+  const completedStages = [
+    datasets.length > 0,
+    Boolean(datasetDetail?.current_annotation_version),
+    runs.some((run) => run.status === 'succeeded'),
+    Boolean(inference?.available),
+  ].filter(Boolean).length
 
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand">
+        <a className="brand" href="#overview" aria-label="DefectDock 总览">
           <div className="brand-mark">D</div>
-          <div>
-            <strong>DefectDock</strong>
-            <span>VISION OPERATIONS</span>
-          </div>
-        </div>
+          <div><strong>DefectDock</strong><span>VISION OPERATIONS</span></div>
+        </a>
         <nav aria-label="主导航">
-          <a className="active" href="#overview"><span>◫</span>总览</a>
-          <a href="#workflow"><span>◇</span>项目工作流</a>
-          <a href="#runs"><span>◎</span>训练运行</a>
-          <a href="#models"><span>⬡</span>模型资产</a>
-          <a href="#settings"><span>⚙</span>系统设置</a>
+          <a href="#overview"><span>01</span>运行总览</a>
+          <a href="#datasets"><span>02</span>数据与标注</a>
+          <a href="#training"><span>03</span>训练配置</a>
+          <a href="#runs"><span>04</span>运行与产物</a>
+          <a href="#inference"><span>05</span>模型推理</a>
         </nav>
         <div className="sidebar-footer">
           <span className={`status-dot ${health ? 'online' : ''}`} />
@@ -81,64 +208,61 @@ function App() {
 
       <main>
         <header>
-          <div><p className="eyebrow">INDUSTRIAL VISION WORKBENCH</p><h1>交付控制台</h1></div>
-          <div className="header-actions"><button className="ghost">查看接口</button><button className="primary">新建项目</button></div>
+          <div><p className="eyebrow">INDUSTRIAL VISION WORKBENCH</p><h1>交付工作台</h1></div>
+          <div className="header-actions">
+            <button className="ghost" onClick={() => window.open('/docs', '_blank')}>接口文档</button>
+            <button className="primary" onClick={() => setShowCreate(true)} disabled={!health?.dataset_upload_enabled}>创建数据集</button>
+          </div>
         </header>
 
-        {error && <div className="notice">{error}</div>}
+        <Feedback error={error} message={message} onClose={() => { setError(null); setMessage(null) }} />
 
         <section className="hero" id="overview">
           <div>
-            <span className="pill">ENGINEERING BASELINE · 0.1.0</span>
-            <h2>让视觉模型从数据<br />走到真实产线。</h2>
-            <p>在一个可追溯的工作流中完成数据治理、训练、工业指标验收与部署准备。</p>
+            <span className="pill">PRODUCT SLICE · P1-1</span>
+            <h2>一条链路，完成数据到模型。</h2>
+            <p>上传图片与标注，冻结可追溯数据版本，提交训练并查看产物，最后激活模型完成推理验证。</p>
           </div>
           <div className="hero-metric">
-            <span>交付链路</span><strong>4 / 4</strong><small>核心阶段已建立工程边界</small>
-            <div className="metric-line"><i /></div>
+            <span>当前闭环进度</span><strong>{completedStages} / 4</strong><small>按实际工作区状态计算</small>
+            <div className="metric-line"><i style={{ width: `${completedStages * 25}%` }} /></div>
           </div>
         </section>
 
-        <section className="workflow" id="workflow">
-          <div className="section-title"><div><p className="eyebrow">DELIVERY FLOW</p><h3>从原始图片到可验收模型</h3></div><span>可审计 · 可复现 · 可替换</span></div>
-          <div className="stage-grid">
-            {stages.map((stage, index) => (
-              <article key={stage.number}>
-                <div className="stage-top"><span>{stage.number}</span><i className={index === 0 ? 'ready' : ''} /></div>
-                <h4>{stage.title}</h4><p>{stage.note}</p>
-              </article>
-            ))}
+        <Overview health={health} datasets={datasets} runs={runs} inference={inference} />
+
+        <section className="workspace-section" id="datasets">
+          <SectionTitle eyebrow="DATA GOVERNANCE" title="数据与标注" note="上传 → 标注版本 → 冻结快照" />
+          <div className="split-layout">
+            <DatasetList datasets={datasets} selectedId={selectedDatasetId} onSelect={(id) => { setSelectedDatasetId(id); setSnapshot(null) }} onCreate={() => setShowCreate(true)} />
+            <DatasetWorkspace detail={datasetDetail} busy={busy} onAnnotations={uploadAnnotations} onSnapshot={freezeAndSnapshot} />
           </div>
         </section>
 
-        <div className="content-grid">
-          <section className="panel" id="runs">
-            <div className="section-title"><div><p className="eyebrow">RECENT RUNS</p><h3>最近训练</h3></div><button className="text-button">查看全部 →</button></div>
-            {runs.length ? runs.map((run) => (
-              <div className="run-row" key={run.run_id}>
-                <div className="run-icon">↗</div>
-                <div className="run-name"><strong>{run.project}</strong><span>{run.model}</span></div>
-                <code>{run.run_id.slice(-8)}</code>
-                <span className={`run-status ${run.status}`}>{run.status}</span>
-              </div>
-            )) : <div className="empty"><strong>暂无训练记录</strong><span>验证配置后，从 CLI 发起第一条可复现训练。</span></div>}
-          </section>
+        <section className="workspace-section" id="training">
+          <SectionTitle eyebrow="REPRODUCIBLE TRAINING" title="训练配置" note="配置会随运行固化并计算哈希" />
+          <TrainingForm snapshot={snapshot} dataset={datasetDetail} enabled={Boolean(health?.training_submission_enabled)} busy={busy} onSubmit={submitTraining} />
+        </section>
 
-          <section className="panel" id="models">
-            <div className="section-title"><div><p className="eyebrow">STARTING POINTS</p><h3>训练配置</h3></div></div>
-            {configs.length ? configs.map((config) => (
-              <div className="config-card" key={config.name}>
-                <span className="config-symbol">F</span>
-                <div><strong>{config.project}</strong><small>{config.model}</small></div>
-                <em>{config.dataset.version}</em>
-              </div>
-            )) : <div className="empty compact"><strong>等待 API</strong><span>配置通过后端自动发现。</span></div>}
-            <div className="boundary"><span>✓</span><div><strong>许可证边界已启用</strong><small>内置引擎：PyTorch / TorchVision</small></div></div>
-          </section>
-        </div>
+        <section className="workspace-section" id="runs">
+          <SectionTitle eyebrow="RUN OPERATIONS" title="运行与产物" note="状态每 3 秒自动刷新" />
+          <div className="split-layout runs-layout">
+            <RunList runs={runs} selectedId={selectedRunId} onSelect={setSelectedRunId} />
+            <RunDetail run={selectedRun} events={runEvents} artifacts={artifacts} busy={busy} onCancel={cancelRun} onActivate={activateRun} />
+          </div>
+        </section>
+
+        <InferenceWorkspace status={inference} busy={busy} perform={perform} />
       </main>
+
+      {showCreate && <CreateDatasetDialog busy={busy === 'create-dataset'} onClose={() => setShowCreate(false)} onSubmit={createDataset} />}
     </div>
   )
+}
+
+function toMessage(cause: unknown): string {
+  if (cause instanceof ApiError || cause instanceof Error) return cause.message
+  return '操作失败，请查看后端日志后重试。'
 }
 
 export default App

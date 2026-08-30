@@ -10,7 +10,7 @@ remain usable when a training adapter is replaced.
 
 | Layer | Responsibility | Current implementation |
 |---|---|---|
-| Workbench | Operator-facing project, dataset, training, evaluation and deployment UI | React + TypeScript shell |
+| Workbench | Operator-facing dataset, annotation, training, artifact activation and inference UI | React + TypeScript operational slice |
 | API | Stable HTTP boundary and input validation | FastAPI |
 | Application services | Dataset ingestion, CVAT synchronization, config validation and run queries | Python services |
 | Metadata | Dataset versions, images, run state and metrics | SQLite for the first deliverable |
