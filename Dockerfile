@@ -22,7 +22,8 @@ RUN python -m pip install --no-cache-dir uv==0.11.13 \
          uv sync --locked --no-dev --no-install-project --extra train; \
        else \
          uv sync --locked --no-dev --no-install-project; \
-       fi
+       fi \
+    && uv cache clean
 
 COPY README.md LICENSE THIRD_PARTY_NOTICES.md ./
 COPY src ./src
