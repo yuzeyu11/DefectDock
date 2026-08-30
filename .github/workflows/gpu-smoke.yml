@@ -1,0 +1,82 @@
+name: GPU image smoke
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gpu-smoke:
+    runs-on: [self-hosted, linux, x64, gpu, nvidia]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Build locked GPU image
+        run: |
+          mkdir -p build/evidence/gpu
+          docker build --build-arg DEFECTDOCK_INSTALL_TRAIN=1 \
+            --tag defectdock:gpu-${GITHUB_SHA} .
+          docker image inspect defectdock:gpu-${GITHUB_SHA} --format '{{.Id}}' \
+            > build/evidence/gpu/image-id.txt
+      - name: Verify NVIDIA runtime and Torch CUDA
+        run: |
+          set -o pipefail
+          docker run --rm --gpus all \
+            -v "$PWD/scripts:/smoke:ro" \
+            defectdock:gpu-${GITHUB_SHA} \
+            python /smoke/check_gpu_runtime.py \
+            | tee build/evidence/gpu/runtime.json
+      - name: Run one-epoch CUDA training smoke
+        run: |
+          set -o pipefail
+          docker run --rm --gpus all \
+            -v "$PWD/scripts:/smoke:ro" \
+            defectdock:gpu-${GITHUB_SHA} \
+            python /smoke/smoke_train.py /data/hardware-smoke --device cuda \
+            | tee build/evidence/gpu/training-smoke.json
+      - name: Generate GPU image SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: defectdock:gpu-${{ github.sha }}
+          format: cyclonedx-json
+          output-file: build/evidence/gpu/sbom.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Record all GPU image vulnerabilities
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: defectdock:gpu-${{ github.sha }}
+          fail-build: false
+          severity-cutoff: negligible
+          output-format: json
+          output-file: build/evidence/gpu/vulnerabilities-all.json
+      - name: Gate fixable GPU image vulnerabilities
+        id: gpu_scan_gate
+        continue-on-error: true
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: defectdock:gpu-${{ github.sha }}
+          fail-build: true
+          only-fixed: true
+          severity-cutoff: high
+          output-format: json
+          output-file: build/evidence/gpu/vulnerabilities-fixable.json
+      - name: Hash GPU release evidence
+        if: always()
+        run: |
+          cd build/evidence/gpu
+          sha256sum image-id.txt runtime.json training-smoke.json sbom.cdx.json \
+            vulnerabilities-all.json vulnerabilities-fixable.json > SHA256SUMS
+      - name: Archive GPU release evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: defectdock-gpu-release-evidence
+          path: build/evidence/gpu
+          if-no-files-found: error
+          retention-days: 90
+      - name: Enforce GPU vulnerability gate
+        if: steps.gpu_scan_gate.outcome == 'failure'
+        run: exit 1
+

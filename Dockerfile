@@ -5,14 +5,15 @@ ARG DEFECTDOCK_INSTALL_TRAIN=0
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    DEBIAN_FRONTEND=noninteractive \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     DEFECTDOCK_WORKSPACE=/data
 
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get upgrade --no-install-recommends -y \
+RUN apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 upgrade --no-install-recommends -y \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml uv.lock README.md LICENSE THIRD_PARTY_NOTICES.md ./
@@ -30,7 +31,7 @@ ENV PATH="/app/.venv/bin:$PATH"
 
 RUN useradd --create-home --uid 10001 defectdock \
     && mkdir -p /data/.defectdock /data/datasets /data/outputs \
-    && chown -R defectdock:defectdock /app /data
+    && chown -R defectdock:defectdock /data
 
 USER defectdock
 VOLUME ["/data"]

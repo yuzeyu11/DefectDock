@@ -30,6 +30,11 @@ workflow; unfixed upstream findings remain visible and require a documented
 release risk decision. The action revisions are pinned exactly like every
 other external CI action.
 
+The manually dispatched GPU workflow performs the same evidence collection on
+a self-hosted NVIDIA runner, in addition to checking Torch CUDA visibility and
+running a one-epoch training smoke. See `docs/gpu-delivery.md` for the required
+runner labels and hardware acceptance boundary.
+
 ## Enforced policy
 
 - GitHub Actions are pinned to immutable commit SHAs.

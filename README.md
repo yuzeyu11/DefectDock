@@ -139,10 +139,17 @@ defectdock serve --host 0.0.0.0 --port 8000
 docker compose up --build
 ```
 
-如果确实需要在同一镜像内安装 PyTorch/TorchVision 训练栈，可显式设置
-`DEFECTDOCK_INSTALL_TRAIN=1` 后再构建。该模式会显著增大镜像，并且 GPU
-交付还必须结合目标 CUDA/驱动环境单独验证；轻量镜像的健康检查会如实返回
-`training_submission_enabled: false`，不会接受训练任务。
+GPU 训练使用显式 Compose 覆盖，它会从同一份 `uv.lock` 安装训练栈并申请
+NVIDIA GPU：
+
+```bash
+docker compose -f compose.yaml -f compose.gpu.yaml build api
+docker compose -f compose.yaml -f compose.gpu.yaml up api
+```
+
+轻量镜像的健康检查会如实返回 `training_submission_enabled: false`，不会接受
+训练任务。GPU 镜像的本地探针、训练烟雾测试、自托管 CI 与验收边界见
+[GPU 交付说明](docs/gpu-delivery.md)。
 
 ### 5. React 工作台
 
@@ -190,6 +197,7 @@ DefectDock 原创代码当前采用 [专有许可证](LICENSE)，在权利人明
 - [x] Alembic 数据库迁移、升级前备份、失败恢复和显式标注版本外键
 - [x] Python/前端 SBOM、漏洞与许可证发布证据工作流
 - [x] 轻量容器固定基础镜像摘要、严格使用 `uv.lock`，并移除运行时构建工具
+- [x] CUDA 13 GPU 训练镜像、Compose 覆盖、运行时探针与容器内训练烟雾验收
 - [ ] 持久化任务队列、自动重试和多设备资源调度
 - [ ] 参考 Geti 建立项目、数据版本、模型版本和部署版本的完整追溯关系
 - [ ] 参考 Anomalib Studio 增加异常检测任务、热力图和阈值验收

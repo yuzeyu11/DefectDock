@@ -1,0 +1,8 @@
+services:
+  api:
+    image: defectdock:gpu
+    build:
+      args:
+        DEFECTDOCK_INSTALL_TRAIN: "1"
+    gpus: all
+
