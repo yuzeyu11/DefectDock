@@ -38,7 +38,26 @@ class AnnotationVersionRecord(BaseModel):
     labeled_count: int
     unlabeled_count: int
     created_at: str
+    review_status: str = "approved"
+    reviewed_by: str | None = None
+    reviewed_at: str | None = None
     is_current: bool = False
+
+
+class TrainingSnapshotRecord(BaseModel):
+    snapshot_id: str
+    dataset_id: str
+    annotation_version_id: str
+    snapshot_sha256: str
+    manifest_path: str
+    manifest_sha256: str
+    data_yaml: str
+    image_count: int
+    train_count: int
+    val_count: int
+    seed: int
+    val_ratio: float
+    created_at: str
 
 
 class DatasetRecord(BaseModel):

@@ -5,15 +5,19 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import shutil
+import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import Callable
 from uuid import uuid4
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
@@ -21,18 +25,22 @@ from starlette.concurrency import run_in_threadpool
 from defectdock import __version__
 from defectdock.config import RunConfig
 from defectdock.data import (
+    generate_auto_annotations,
     import_cvat_yolo_export,
     import_uploaded_annotations,
     ingest_images,
     parse_labels,
 )
 from defectdock.data.cv import build_training_snapshot, check_dataset, compute_stats
-from defectdock.db import DatasetStore, RunStore
-from defectdock.domain import AnnotationVersionRecord, new_dataset_id
+from defectdock.db import DatasetStore, ModelStore, RunStore
+from defectdock.domain import AnnotationVersionRecord, ModelVersionRecord, new_dataset_id
 from defectdock.engines import EngineResult, build_plan, run_training
+from defectdock.exports import export_onnx_package
+from defectdock.exports.onnx import verify_onnx_package
 from defectdock.inference import DetectionInferenceService
 from defectdock.integrations import CvatClient, CvatSettings
 from defectdock.resources import load_example_configs
+from defectdock.security import SecurityBoundaryMiddleware, SecurityMode, SecuritySettings
 from defectdock.services import TrainingJobManager
 from defectdock.settings import RuntimeSettings
 
@@ -46,6 +54,19 @@ class SnapshotRequest(BaseModel):
     annotation_version_id: str | None = Field(default=None, min_length=1, max_length=160)
 
 
+class OnnxExportRequest(BaseModel):
+    opset: int = Field(default=18, ge=17, le=20)
+    warmup_runs: int = Field(default=2, ge=0, le=20)
+    benchmark_runs: int = Field(default=10, ge=1, le=100)
+
+
+class AutoAnnotationRequest(BaseModel):
+    model_version_id: str | None = Field(default=None, min_length=1, max_length=160)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    max_detections: int = Field(default=100, ge=1, le=1000)
+    device: str = Field(default="auto", min_length=1, max_length=32)
+
+
 def create_app(
     db_path: str | Path | None = None,
     datasets_root: str | Path | None = None,
@@ -56,6 +77,7 @@ def create_app(
     *,
     workspace: str | Path | None = None,
     runtime_settings: RuntimeSettings | None = None,
+    security_settings: SecuritySettings | None = None,
     training_enabled: bool | None = None,
 ) -> FastAPI:
     if project_root is not None and workspace is not None:
@@ -65,6 +87,8 @@ def create_app(
         db_path=db_path,
         datasets_root=datasets_root,
     )
+    security = security_settings or SecuritySettings.from_sources(runtime.state_dir)
+
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         try:
@@ -78,20 +102,45 @@ def create_app(
         description="Industrial computer-vision lifecycle API.",
         lifespan=lifespan,
     )
+    app.add_middleware(SecurityBoundaryMiddleware, policy=security)
     app.state.settings = runtime
+    app.state.security = security
     app.state.training_submission_enabled = (
         _training_stack_available() if training_enabled is None else training_enabled
     )
     app.state.store = RunStore(runtime.db_path)
     app.state.datasets = DatasetStore(runtime.db_path)
+    app.state.models = ModelStore(runtime.db_path)
     app.state.datasets_root = runtime.datasets_root
     app.state.datasets_root.mkdir(parents=True, exist_ok=True)
     app.state.cvat = cvat_client or CvatClient(CvatSettings.from_env(runtime.cvat_config))
     app.state.project_root = runtime.workspace
     app.state.active_model_config = runtime.active_model_config
-    app.state.inference = inference_service or DetectionInferenceService.from_config(
-        app.state.active_model_config, runtime.workspace
-    )
+    app.state.activation_lock = threading.Lock()
+    app.state.active_model_integrity = "none"
+    if inference_service is not None:
+        app.state.inference = inference_service
+        app.state.active_model_integrity = "injected"
+    else:
+        active_model = app.state.models.get_active_model(required=False)
+        if active_model is not None:
+            try:
+                app.state.models.verify_artifact(active_model)
+                _atomic_write_json(app.state.active_model_config, _model_config_payload(app, active_model))
+                app.state.inference = DetectionInferenceService.from_config(
+                    app.state.active_model_config, runtime.workspace
+                )
+                app.state.active_model_integrity = "verified"
+            except (KeyError, OSError, ValueError):
+                app.state.inference = DetectionInferenceService(None)
+                app.state.active_model_integrity = "failed"
+        else:
+            app.state.inference = DetectionInferenceService.from_config(
+                app.state.active_model_config, runtime.workspace
+            )
+            app.state.active_model_integrity = (
+                "legacy" if app.state.inference.available else "none"
+            )
     app.state.jobs = TrainingJobManager(
         app.state.store,
         runtime.workspace,
@@ -117,6 +166,10 @@ def create_app(
             "training_submission_enabled": app.state.training_submission_enabled,
             "dataset_upload_enabled": True,
             "inference_ready": app.state.inference.available,
+            "security_mode": app.state.security.mode.value,
+            "authentication_required": app.state.security.mode is SecurityMode.NETWORK,
+            "max_request_bytes": app.state.security.max_request_bytes,
+            "active_model_integrity": app.state.active_model_integrity,
         }
 
     @app.get("/api/inference/status")
@@ -138,7 +191,7 @@ def create_app(
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except RuntimeError as exc:
+        except (ImportError, RuntimeError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @app.get("/api/integrations/cvat")
@@ -252,6 +305,79 @@ def create_app(
             "annotation_version": version.model_dump(mode="json"),
         }
 
+    @app.post("/api/datasets/{dataset_id}/auto-annotations", status_code=201)
+    async def create_auto_annotations(
+        dataset_id: str,
+        auto_request: AutoAnnotationRequest | None = None,
+    ) -> dict:
+        auto_request = auto_request or AutoAnnotationRequest()
+        try:
+            dataset = app.state.datasets.get_dataset(dataset_id)
+            images = app.state.datasets.list_images(dataset_id, limit=5000)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if dataset.status.value == "frozen":
+            raise HTTPException(status_code=409, detail="Frozen datasets cannot accept annotations")
+        try:
+            model = (
+                app.state.models.get_model(auto_request.model_version_id)
+                if auto_request.model_version_id
+                else app.state.models.get_active_model()
+            )
+            app.state.models.verify_artifact(model)
+            if model.approval_status != "approved":
+                raise ValueError("Model version must be approved before automatic annotation")
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        predictor = DetectionInferenceService(
+            model.artifact_path,
+            confidence=auto_request.confidence,
+            max_detections=auto_request.max_detections,
+            device=auto_request.device,
+        )
+
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        version_id = f"auto-{timestamp}-{uuid4().hex[:8]}"
+        version_dir = Path(dataset.root_dir) / "annotations" / "versions" / version_id
+        try:
+            generated = await run_in_threadpool(
+                partial(
+                    _generate_checked_auto_annotations,
+                    dataset,
+                    images,
+                    predictor,
+                    version_dir,
+                    model_version_id=model.model_version_id,
+                    model_sha256=model.artifact_sha256,
+                    confidence=auto_request.confidence,
+                )
+            )
+            version = app.state.datasets.register_annotation_version(
+                dataset_id,
+                version_id,
+                source="model_prediction",
+                format="normalized-detection-text-v1",
+                root_dir=version_dir,
+                manifest_path=generated["manifest_path"],
+                labeled_count=generated["labeled_count"],
+                unlabeled_count=generated["unlabeled_count"],
+                review_status="candidate",
+            )
+        except (ImportError, RuntimeError) as exc:
+            shutil.rmtree(version_dir, ignore_errors=True)
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except (OSError, ValueError) as exc:
+            shutil.rmtree(version_dir, ignore_errors=True)
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {
+            "annotation_version": version.model_dump(mode="json"),
+            "model_version": model.model_dump(mode="json"),
+            "detection_count": generated["detection_count"],
+        }
+
     @app.get("/api/datasets/{dataset_id}/annotation-versions")
     def list_annotation_versions(
         dataset_id: str,
@@ -267,6 +393,20 @@ def create_app(
     def select_annotation_version(dataset_id: str, version_id: str) -> dict:
         try:
             version = app.state.datasets.set_current_annotation_version(dataset_id, version_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return version.model_dump(mode="json")
+
+    @app.post("/api/datasets/{dataset_id}/annotation-versions/{version_id}/approve")
+    def approve_annotation_version(dataset_id: str, version_id: str, request: Request) -> dict:
+        try:
+            version = app.state.datasets.approve_annotation_version(
+                dataset_id,
+                version_id,
+                actor=request.state.actor,
+            )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:
@@ -325,15 +465,41 @@ def create_app(
             if not quality.ok:
                 raise ValueError("Generated snapshot failed its dataset quality gate")
             stats = compute_stats(snapshot["data_yaml"])
+            snapshot_record = app.state.datasets.register_training_snapshot(
+                dataset_id, snapshot
+            )
         except KeyError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except (OSError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {
             "snapshot": snapshot,
+            "record": snapshot_record.model_dump(mode="json"),
             "quality": quality.to_dict(),
             "stats": stats.to_dict(),
         }
+
+    @app.get("/api/datasets/{dataset_id}/training-snapshots")
+    def list_training_snapshots(
+        dataset_id: str,
+        limit: int = Query(default=100, ge=1, le=1000),
+    ) -> list[dict]:
+        try:
+            snapshots = app.state.datasets.list_training_snapshots(dataset_id, limit)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return [snapshot.model_dump(mode="json") for snapshot in snapshots]
+
+    @app.get("/api/datasets/{dataset_id}/training-snapshots/{snapshot_id}")
+    def get_training_snapshot(dataset_id: str, snapshot_id: str) -> dict:
+        try:
+            snapshot = app.state.datasets.get_training_snapshot(dataset_id, snapshot_id)
+            app.state.datasets.verify_training_snapshot(snapshot)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return snapshot.model_dump(mode="json")
 
     @app.post("/api/datasets/{dataset_id}/cvat-task", status_code=201)
     def create_cvat_task(dataset_id: str) -> dict:
@@ -524,38 +690,168 @@ def create_app(
             "metrics": str(metrics) if metrics.is_file() else None,
         }
 
-    @app.post("/api/runs/{run_id}/activate")
-    def activate_run_model(run_id: str) -> dict:
+    @app.post("/api/runs/{run_id}/register", status_code=201)
+    def register_run_model(run_id: str, request: Request) -> dict:
         try:
             record = app.state.store.get_run(run_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        if record.status.value != "succeeded":
-            raise HTTPException(status_code=409, detail="Only a succeeded run can be activated")
-        model_path = Path(record.output_dir) / "trainer_output" / "weights" / "best.ckpt"
-        if not model_path.is_file():
-            raise HTTPException(status_code=404, detail="Run has no best.ckpt artifact")
+        artifact = Path(record.output_dir) / "trainer_output" / "weights" / "best.ckpt"
         try:
-            stored_model = model_path.relative_to(app.state.project_root)
-        except ValueError:
-            stored_model = model_path
-        payload = {
-            "model": str(stored_model).replace("\\", "/"),
-            "confidence": record.config["train"]["score_threshold"],
-            "max_detections": 100,
-            "device": record.config["train"]["device"],
-            "run_id": run_id,
-        }
-        app.state.active_model_config.parent.mkdir(parents=True, exist_ok=True)
-        app.state.active_model_config.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+            model = app.state.models.register_run(record, artifact, actor=request.state.actor)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"model_version": model.model_dump(mode="json")}
+
+    @app.get("/api/models")
+    def list_models(
+        limit: int = Query(default=100, ge=1, le=1000),
+        project: str | None = Query(default=None, min_length=1, max_length=64),
+    ) -> list[dict]:
+        return [
+            model.model_dump(mode="json")
+            for model in app.state.models.list_models(limit=limit, project=project)
+        ]
+
+    @app.get("/api/models/active")
+    def get_active_model() -> dict:
+        try:
+            model = app.state.models.get_active_model()
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return model.model_dump(mode="json")
+
+    @app.get("/api/models/activation-history")
+    def get_model_activation_history(
+        limit: int = Query(default=100, ge=1, le=1000),
+    ) -> list[dict]:
+        return [
+            event.model_dump(mode="json")
+            for event in app.state.models.activation_history(limit=limit)
+        ]
+
+    @app.get("/api/models/{model_version_id}")
+    def get_model(model_version_id: str) -> dict:
+        try:
+            model = app.state.models.get_model(model_version_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return model.model_dump(mode="json")
+
+    @app.post("/api/models/{model_version_id}/approve")
+    def approve_registered_model(model_version_id: str, request: Request) -> dict:
+        try:
+            model = app.state.models.approve(model_version_id, actor=request.state.actor)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return model.model_dump(mode="json")
+
+    @app.post("/api/models/{model_version_id}/activate")
+    def activate_registered_model(model_version_id: str, request: Request) -> dict:
+        try:
+            model = app.state.models.get_model(model_version_id)
+            return _activate_model(app, model, request.state.actor)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/models/{model_version_id}/exports/onnx", status_code=201)
+    async def export_registered_model_onnx(
+        model_version_id: str,
+        export_request: OnnxExportRequest | None = None,
+    ) -> dict:
+        export_request = export_request or OnnxExportRequest()
+        try:
+            model = app.state.models.get_model(model_version_id)
+            app.state.models.verify_artifact(model)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        output_dir = (
+            app.state.project_root
+            / "outputs"
+            / "deployments"
+            / model.model_version_id
+            / f"onnx-opset{export_request.opset}"
         )
-        app.state.inference = DetectionInferenceService.from_config(
-            app.state.active_model_config,
-            app.state.project_root,
+        if output_dir.exists():
+            try:
+                manifest = verify_onnx_package(output_dir)
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            if manifest.get("source", {}).get("checkpoint_sha256") != model.artifact_sha256:
+                raise HTTPException(status_code=409, detail="Existing ONNX export has a different source")
+            return {"created": False, "export": {**manifest, "package_dir": str(output_dir)}}
+        try:
+            manifest = await run_in_threadpool(
+                partial(
+                    export_onnx_package,
+                    model.artifact_path,
+                    output_dir,
+                    opset=export_request.opset,
+                    warmup_runs=export_request.warmup_runs,
+                    benchmark_runs=export_request.benchmark_runs,
+                )
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except (FileExistsError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"created": True, "export": manifest}
+
+    @app.get("/api/models/{model_version_id}/exports/onnx")
+    def get_registered_model_onnx_export(
+        model_version_id: str,
+        opset: int = Query(default=18, ge=17, le=20),
+    ) -> dict:
+        try:
+            model = app.state.models.get_model(model_version_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        output_dir = (
+            app.state.project_root
+            / "outputs"
+            / "deployments"
+            / model.model_version_id
+            / f"onnx-opset{opset}"
         )
-        return {"activated": True, "inference": app.state.inference.status()}
+        try:
+            manifest = verify_onnx_package(output_dir)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {**manifest, "package_dir": str(output_dir)}
+
+    @app.post("/api/models/rollback")
+    def rollback_model(request: Request) -> dict:
+        try:
+            target = app.state.models.rollback_target()
+            return _activate_model(app, target, request.state.actor, action="rollback")
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/runs/{run_id}/activate")
+    def activate_run_model(run_id: str, request: Request) -> dict:
+        try:
+            record = app.state.store.get_run(run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        model_path = Path(record.output_dir) / "trainer_output" / "weights" / "best.ckpt"
+        try:
+            model = app.state.models.register_run(record, model_path, actor=request.state.actor)
+            model = app.state.models.approve(model.model_version_id, actor=request.state.actor)
+            return _activate_model(app, model, request.state.actor)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get("/api/runs/{run_id}/events")
     def get_run_events(run_id: str) -> list[dict]:
@@ -577,6 +873,8 @@ def create_app(
                 continue
         return events
 
+    if security.mode is SecurityMode.NETWORK:
+        _configure_network_openapi(app)
     return app
 
 
@@ -593,6 +891,145 @@ def _training_stack_available() -> bool:
         importlib.util.find_spec("torch") is not None
         and importlib.util.find_spec("torchvision") is not None
     )
+
+
+def _configure_network_openapi(app: FastAPI) -> None:
+    """Expose the middleware Bearer contract in Swagger without protecting health."""
+
+    def custom_openapi() -> dict:
+        if app.openapi_schema is not None:
+            return app.openapi_schema
+        schema = get_openapi(
+            title=app.title,
+            version=app.version,
+            description=app.description,
+            routes=app.routes,
+        )
+        components = schema.setdefault("components", {})
+        schemes = components.setdefault("securitySchemes", {})
+        schemes["BearerAuth"] = {"type": "http", "scheme": "bearer"}
+        for path, operations in schema.get("paths", {}).items():
+            for operation in operations.values():
+                if isinstance(operation, dict):
+                    operation["security"] = [] if path == "/api/health" else [{"BearerAuth": []}]
+        app.openapi_schema = schema
+        return schema
+
+    app.openapi = custom_openapi
+
+
+def _activate_model(
+    app: FastAPI,
+    model: ModelVersionRecord,
+    actor: str,
+    *,
+    action: str = "activate",
+) -> dict:
+    app.state.models.verify_artifact(model)
+    payload = _model_config_payload(app, model)
+
+    with app.state.activation_lock:
+        previous_model = app.state.models.get_active_model(required=False)
+        previous_id = previous_model.model_version_id if previous_model else None
+        previous_config = (
+            app.state.active_model_config.read_bytes()
+            if app.state.active_model_config.is_file()
+            else None
+        )
+        try:
+            _atomic_write_json(app.state.active_model_config, payload)
+            candidate = DetectionInferenceService.from_config(
+                app.state.active_model_config,
+                app.state.project_root,
+            )
+            activation = app.state.models.activate(
+                model.model_version_id,
+                actor=actor,
+                action=action,
+                expected_previous_id=previous_id,
+            )
+        except Exception:
+            _restore_file(app.state.active_model_config, previous_config)
+            raise
+        app.state.inference = candidate
+        app.state.active_model_integrity = "verified"
+
+    return {
+        "activated": True,
+        "model_version": app.state.models.get_model(model.model_version_id).model_dump(mode="json"),
+        "activation": activation.model_dump(mode="json"),
+        "inference": app.state.inference.status(),
+    }
+
+
+def _model_config_payload(app: FastAPI, model: ModelVersionRecord) -> dict:
+    run = app.state.store.get_run(model.run_id)
+    model_path = Path(model.artifact_path)
+    try:
+        stored_model = model_path.relative_to(app.state.project_root)
+    except ValueError:
+        stored_model = model_path
+    return {
+        "model": str(stored_model).replace("\\", "/"),
+        "confidence": run.config["train"]["score_threshold"],
+        "max_detections": 100,
+        "device": run.config["train"]["device"],
+        "run_id": run.run_id,
+        "model_version_id": model.model_version_id,
+        "artifact_sha256": model.artifact_sha256,
+    }
+
+
+def _generate_checked_auto_annotations(
+    dataset,
+    images,
+    predictor: DetectionInferenceService,
+    version_dir: Path,
+    *,
+    model_version_id: str,
+    model_sha256: str,
+    confidence: float,
+) -> dict:
+    class_names = predictor.class_names
+    if class_names != dataset.labels:
+        raise ValueError(
+            "Registered model classes do not match the target dataset: "
+            f"expected {dataset.labels}, got {class_names}"
+        )
+    return generate_auto_annotations(
+        dataset,
+        images,
+        predictor,
+        version_dir,
+        model_version_id=model_version_id,
+        model_sha256=model_sha256,
+        confidence=confidence,
+    )
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    staging = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        staging.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        os.replace(staging, path)
+    finally:
+        staging.unlink(missing_ok=True)
+
+
+def _restore_file(path: Path, previous: bytes | None) -> None:
+    if previous is None:
+        path.unlink(missing_ok=True)
+        return
+    staging = path.with_name(f".{path.name}.{uuid4().hex}.restore")
+    try:
+        staging.write_bytes(previous)
+        os.replace(staging, path)
+    finally:
+        staging.unlink(missing_ok=True)
 
 
 def _load_annotation_boxes(

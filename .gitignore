@@ -18,6 +18,7 @@ __pycache__/
 .coverage.*
 coverage.xml
 htmlcov/
+coverage/
 
 # Packaging and notebook artifacts
 build/
@@ -26,6 +27,7 @@ dist/
 .eggs/
 .ipynb_checkpoints/
 node_modules/
+*.tsbuildinfo
 
 # IDE and OS metadata
 .idea/
@@ -42,13 +44,21 @@ Desktop.ini
 !.env.example
 *.local.json
 
+# Local SQLite databases, backups and transaction sidecars
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+
 # Local datasets, model artifacts and generated runs
 datasets/
 models/
 outputs/
 runs/
 logs/
-exports/
+/exports/
 /services/
 .cache/
 tmp/

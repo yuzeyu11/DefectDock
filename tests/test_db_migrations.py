@@ -43,7 +43,7 @@ class DatabaseMigrationTests(unittest.TestCase):
     def test_new_database_reaches_packaged_head(self):
         result = upgrade_database(self.db_path)
         self.assertEqual(result.current_revision, head_revision(self.db_path))
-        self.assertEqual(current_revision(self.db_path), "0002_annotation_versions")
+        self.assertEqual(current_revision(self.db_path), "0006_model_approval")
         with closing(sqlite3.connect(self.db_path)) as connection:
             tables = {
                 row[0]
@@ -53,6 +53,22 @@ class DatabaseMigrationTests(unittest.TestCase):
             }
         self.assertIn("annotation_versions", tables)
         self.assertIn("dataset_annotation_heads", tables)
+        self.assertIn("model_versions", tables)
+        self.assertIn("model_activation_head", tables)
+        self.assertIn("model_activation_events", tables)
+        self.assertIn("training_snapshots", tables)
+        with closing(sqlite3.connect(self.db_path)) as connection:
+            annotation_columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(annotation_versions)")
+            }
+        self.assertIn("review_status", annotation_columns)
+        self.assertIn("reviewed_by", annotation_columns)
+        with closing(sqlite3.connect(self.db_path)) as connection:
+            model_columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(model_versions)")
+            }
+        self.assertIn("approval_status", model_columns)
+        self.assertIn("approved_by", model_columns)
 
     def test_legacy_database_is_backed_up_and_preserved_during_upgrade(self):
         self._create_legacy_dataset()

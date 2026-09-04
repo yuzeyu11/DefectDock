@@ -5,9 +5,11 @@ from .datasets import (
     DatasetImageRecord,
     DatasetRecord,
     DatasetStatus,
+    TrainingSnapshotRecord,
     new_dataset_id,
     new_image_id,
 )
+from .models import ModelActivationRecord, ModelVersionRecord
 from .runs import RunRecord, RunStatus, ensure_transition, new_run_id
 
 __all__ = [
@@ -15,6 +17,9 @@ __all__ = [
     "DatasetImageRecord",
     "DatasetRecord",
     "DatasetStatus",
+    "TrainingSnapshotRecord",
+    "ModelActivationRecord",
+    "ModelVersionRecord",
     "RunRecord",
     "RunStatus",
     "ensure_transition",

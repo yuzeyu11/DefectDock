@@ -38,6 +38,9 @@ class DatasetStoreTests(unittest.TestCase):
                 width=64,
                 height=48,
             )
+        with self.assertRaisesRegex(ValueError, "annotation version"):
+            self.store.freeze_dataset("ds-test")
+        self._annotation_version("approved-v1", "approved")
         dataset = self.store.freeze_dataset("ds-test")
         self.assertEqual(dataset.status.value, "frozen")
         with self.assertRaises(ValueError):

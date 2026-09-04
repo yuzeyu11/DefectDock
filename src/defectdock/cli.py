@@ -28,6 +28,7 @@ from defectdock.inference import DetectionInferenceService
 from defectdock.integrations import CvatSettings
 from defectdock.pipeline import prepare_project, recommend_model
 from defectdock.provenance import write_run_manifest
+from defectdock.security import SecurityMode, SecuritySettings, validate_bind_host
 from defectdock.settings import RuntimeSettings
 from defectdock.stream import stream_camera
 
@@ -218,13 +219,28 @@ def doctor() -> None:
 def serve(
     host: Annotated[str, typer.Option()] = "127.0.0.1",
     port: Annotated[int, typer.Option(min=1, max=65535)] = 8000,
+    mode: Annotated[
+        SecurityMode | None,
+        typer.Option(help="Security boundary: local or network (or set DEFECTDOCK_SECURITY_MODE)"),
+    ] = None,
 ) -> None:
-    """Start the local REST API."""
+    """Start the REST API with an explicit local or authenticated network boundary."""
     import uvicorn
 
     from defectdock.api import create_app
 
-    uvicorn.run(create_app(runtime_settings=_settings()), host=host, port=port, reload=False)
+    try:
+        security = SecuritySettings.from_sources(_settings().state_dir, mode=mode)
+        validate_bind_host(security.mode, host)
+    except ValueError as exc:
+        typer.echo(f"serve failed: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    uvicorn.run(
+        create_app(runtime_settings=_settings(), security_settings=security),
+        host=host,
+        port=port,
+        reload=False,
+    )
 
 
 @app.command("configure-cvat")
@@ -310,6 +326,31 @@ def detect(
     except (ValueError, RuntimeError) as exc:
         typer.echo(f"detect failed: {exc}", err=True)
         raise typer.Exit(code=1) from exc
+
+
+@app.command("export-onnx")
+def export_onnx(
+    model_path: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    output_dir: Annotated[Path, typer.Argument()],
+    opset: Annotated[int, typer.Option(min=17, max=20)] = 18,
+    warmup_runs: Annotated[int, typer.Option(min=0, max=20)] = 2,
+    benchmark_runs: Annotated[int, typer.Option(min=1, max=100)] = 10,
+) -> None:
+    """Export, numerically verify, and benchmark an ONNX deployment package."""
+    from defectdock.exports import export_onnx_package
+
+    try:
+        result = export_onnx_package(
+            model_path,
+            _settings().resolve(output_dir),
+            opset=opset,
+            warmup_runs=warmup_runs,
+            benchmark_runs=benchmark_runs,
+        )
+    except (FileExistsError, FileNotFoundError, RuntimeError, ValueError, OSError) as exc:
+        typer.echo(f"ONNX export failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    _json(result)
 
 
 @app.command("stream")

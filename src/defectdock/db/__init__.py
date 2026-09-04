@@ -9,12 +9,14 @@ from .migration import (
     restore_database,
     upgrade_database,
 )
+from .models import ModelStore
 from .store import RunStore
 
 __all__ = [
     "DatasetStore",
     "DuplicateImageError",
     "MigrationResult",
+    "ModelStore",
     "RunStore",
     "backup_database",
     "current_revision",

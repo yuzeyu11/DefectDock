@@ -52,6 +52,11 @@ class DetectionInferenceService:
     def available(self) -> bool:
         return self.model_path is not None and self.model_path.is_file()
 
+    @property
+    def class_names(self) -> list[str]:
+        self._get_model()
+        return list(self._classes)
+
     def status(self) -> dict[str, Any]:
         return {
             "configured": self.model_path is not None,

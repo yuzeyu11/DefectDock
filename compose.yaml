@@ -7,6 +7,8 @@ services:
         DEFECTDOCK_BUILD_REVISION: ${DEFECTDOCK_BUILD_REVISION:-unknown}
     ports:
       - "8000:8000"
+    environment:
+      DEFECTDOCK_API_TOKEN: ${DEFECTDOCK_API_TOKEN:?Set DEFECTDOCK_API_TOKEN to a random value of at least 32 bytes}
     volumes:
       - defectdock-state:/data/.defectdock
       - ./datasets:/data/datasets

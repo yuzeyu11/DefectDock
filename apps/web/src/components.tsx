@@ -1,8 +1,11 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { api } from './api'
+import { Icon, ImagePicker } from './ui'
+import { useDialog } from './ui-utils'
 import type {
   Dataset,
   DatasetDetail,
+  DatasetImage,
   Health,
   InferenceResult,
   InferenceStatus,
@@ -27,15 +30,16 @@ const statusText: Record<string, string> = {
 
 const terminalStatuses = new Set(['succeeded', 'failed', 'cancelled'])
 
-export function Overview({ health, datasets, runs, inference }: { health: Health | null; datasets: Dataset[]; runs: Run[]; inference: InferenceStatus | null }) {
+export function Overview({ health, datasets, runs, inference, loading = false }: { health: Health | null; datasets: Dataset[]; runs: Run[]; inference: InferenceStatus | null; loading?: boolean }) {
   const running = runs.filter((run) => !terminalStatuses.has(run.status)).length
   const failed = runs.filter((run) => run.status === 'failed').length
+  if (loading) return <section className="summary-grid" aria-label="正在加载运行摘要" aria-busy="true">{[0, 1, 2, 3].map((item) => <article className="skeleton-card" key={item}><span /><strong /><small /></article>)}</section>
   return (
     <section className="summary-grid" aria-label="运行摘要">
-      <article><span>数据集</span><strong>{datasets.length}</strong><small>{datasets.filter((item) => item.status === 'frozen').length} 个已冻结</small></article>
-      <article><span>训练运行</span><strong>{runs.length}</strong><small>{running} 个正在处理</small></article>
-      <article><span>异常运行</span><strong className={failed ? 'danger-text' : ''}>{failed}</strong><small>保留失败原因便于恢复</small></article>
-      <article><span>推理服务</span><strong className="word-value">{inference?.available ? 'READY' : 'OFFLINE'}</strong><small>{health?.training_submission_enabled ? 'GPU 训练栈可用' : '当前为轻量运行时'}</small></article>
+      <article><span><Icon name="folder" />数据集</span><strong>{datasets.length}</strong><small>{datasets.filter((item) => item.status === 'frozen').length} 个已冻结</small></article>
+      <article><span><Icon name="activity" />训练运行</span><strong>{runs.length}</strong><small>{running} 个正在处理</small></article>
+      <article><span><Icon name="layers" />异常运行</span><strong className={failed ? 'danger-text' : ''}>{failed}</strong><small>{failed ? '进入运行详情查看原因' : '目前没有异常运行'}</small></article>
+      <article><span><Icon name="scan" />推理服务</span><strong className={`word-value ${inference?.available ? 'is-ready' : 'is-idle'}`}>{inference?.available ? '已就绪' : '待激活'}</strong><small>{health?.training_submission_enabled ? 'GPU 训练栈可用' : '当前为轻量运行时'}</small></article>
     </section>
   )
 }
@@ -55,7 +59,7 @@ export function DatasetList({ datasets, selectedId, onSelect, onCreate }: { data
   )
 }
 
-export function DatasetWorkspace({ detail, busy, onAnnotations, onSnapshot }: { detail: DatasetDetail | null; busy: string | null; onAnnotations: (files: File[]) => void; onSnapshot: () => void }) {
+export function DatasetWorkspace({ detail, busy, onAnnotations, onAutoAnnotations, onApproveAnnotations, onCreateCvat, onSyncCvat, onSnapshot }: { detail: DatasetDetail | null; busy: string | null; onAnnotations: (files: File[]) => void; onAutoAnnotations: () => void; onApproveAnnotations: () => void; onCreateCvat: () => void; onSyncCvat: () => void; onSnapshot: () => void }) {
   if (!detail) return <div className="panel"><Empty title="选择一个数据集" text="查看图片、标注版本和冻结状态。" /></div>
   const version = detail.current_annotation_version
   return (
@@ -72,20 +76,51 @@ export function DatasetWorkspace({ detail, busy, onAnnotations, onSnapshot }: { 
       </div>
       <div className="version-card">
         <div><span>当前标注版本</span><strong>{version?.annotation_version_id ?? '尚未导入'}</strong></div>
-        {version && <small>{version.labeled_count} 已标注 · {version.unlabeled_count} 未标注 · SHA {version.manifest_sha256.slice(0, 10)}</small>}
+        {version && <small>{version.labeled_count} 已标注 · {version.unlabeled_count} 未标注 · {version.review_status === 'candidate' ? '等待人工批准' : '已批准'} · SHA {version.manifest_sha256.slice(0, 10)}</small>}
       </div>
       <div className="image-strip">
-        {detail.images.slice(0, 6).map((image) => <img src={image.preview_url} alt={image.original_name} title={image.original_name} key={image.image_id} />)}
-        {detail.images.length > 6 && <span>＋{detail.images.length - 6}</span>}
+        {detail.images.slice(0, 12).map((image) => <AuthenticatedImage image={image} key={image.image_id} />)}
+        {detail.images.length > 12 && <span>＋{detail.images.length - 12}</span>}
       </div>
       <div className="action-bar">
+        {detail.status !== 'frozen' && <button disabled={Boolean(busy)} onClick={() => void onAutoAnnotations()}>{busy === 'auto-annotations' ? '自动标注中…' : '使用当前模型自动标注'}</button>}
+        {detail.status !== 'frozen' && detail.cvat_task_id === null && <button disabled={Boolean(busy)} onClick={() => void onCreateCvat()}>{busy === 'cvat-create' ? '正在创建…' : '创建 CVAT 任务'}</button>}
+        {detail.status !== 'frozen' && detail.cvat_task_id !== null && <button disabled={Boolean(busy)} onClick={() => void onSyncCvat()}>{busy === 'cvat-sync' ? '正在同步…' : '同步 CVAT 标注'}</button>}
+        {detail.annotation_url && <a className="button-like" href={detail.annotation_url} target="_blank" rel="noreferrer">打开 CVAT</a>}
         {detail.status !== 'frozen' && <label className={`button-like ${busy === 'annotations' ? 'disabled' : ''}`}>
           {busy === 'annotations' ? '正在导入…' : '上传 YOLO 标注'}
           <input type="file" accept=".txt,text/plain" multiple disabled={Boolean(busy)} onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ''; void onAnnotations(files) }} />
         </label>}
-        <button className="primary" disabled={Boolean(busy) || !version} onClick={() => void onSnapshot()}>{busy === 'snapshot' ? '正在生成…' : detail.status === 'frozen' ? '重新生成训练快照' : '冻结并生成快照'}</button>
+        {version?.review_status === 'candidate' && <button className="primary" disabled={Boolean(busy)} onClick={() => void onApproveAnnotations()}>{busy === 'approve-annotations' ? '正在批准…' : '批准候选标注'}</button>}
+        <button className="primary" disabled={Boolean(busy) || !version || version.review_status !== 'approved'} onClick={() => void onSnapshot()}>{busy === 'snapshot' ? '正在生成…' : detail.status === 'frozen' ? '重新生成训练快照' : '冻结并生成快照'}</button>
       </div>
       {!version && <p className="helper warning">训练前需上传与图片同名的 YOLO `.txt` 标注文件。</p>}
+      {version?.review_status === 'candidate' && <p className="helper warning">这是模型生成的候选框。请检查预览；如需修正可上传新的 YOLO 标注，确认无误后再批准。</p>}
+    </div>
+  )
+}
+
+function AuthenticatedImage({ image }: { image: DatasetImage }) {
+  const [objectUrl, setObjectUrl] = useState<string | null>(null)
+  useEffect(() => {
+    let active = true
+    let createdUrl: string | null = null
+    void api.datasetImage(image.preview_url).then((blob) => {
+      if (!active) return
+      createdUrl = URL.createObjectURL(blob)
+      setObjectUrl(createdUrl)
+    }).catch(() => setObjectUrl(null))
+    return () => {
+      active = false
+      if (createdUrl) URL.revokeObjectURL(createdUrl)
+    }
+  }, [image.preview_url])
+  return (
+    <div className="annotated-preview" style={{ aspectRatio: `${image.width} / ${image.height}` }} title={image.original_name}>
+      {objectUrl ? <img src={objectUrl} alt={image.original_name} /> : <span>IMG</span>}
+      {objectUrl && image.boxes.length > 0 && <svg viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true">
+        {image.boxes.map((box, index) => <rect key={`${box.class_id}-${index}`} x={box.cx - box.w / 2} y={box.cy - box.h / 2} width={box.w} height={box.h} />)}
+      </svg>}
     </div>
   )
 }
@@ -174,7 +209,7 @@ export function RunDetail({ run, events, artifacts, busy, onCancel, onActivate }
   )
 }
 
-export function InferenceWorkspace({ status, busy, perform }: { status: InferenceStatus | null; busy: string | null; perform: (label: string, action: () => Promise<void>) => Promise<void> }) {
+export function InferenceWorkspace({ status, busy, perform }: { status: InferenceStatus | null; busy: string | null; perform: (label: string, action: () => Promise<void>) => Promise<unknown> }) {
   const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState<string | null>(null)
   const [result, setResult] = useState<InferenceResult | null>(null)
@@ -190,13 +225,10 @@ export function InferenceWorkspace({ status, busy, perform }: { status: Inferenc
       <SectionTitle eyebrow="MODEL VERIFICATION" title="模型推理" note={status?.available ? `已激活 · ${status.device}` : '等待激活模型'} />
       <div className="panel inference-panel">
         <div className="inference-input">
-          <label className="drop-zone">
-            {preview ? <img src={preview} alt="待检测预览" /> : <><strong>选择一张现场图片</strong><span>支持 JPG、PNG、BMP、TIFF，最大 25 MB</span></>}
-            <input type="file" accept="image/*" onChange={(event) => { setFile(event.target.files?.[0] ?? null); setResult(null) }} />
-          </label>
+          <ImagePicker files={file ? [file] : []} preview={preview} disabled={Boolean(busy)} onChange={(files) => { setFile(files[0] ?? null); setResult(null) }} />
           <button className="primary" disabled={!status?.available || !file || Boolean(busy)} onClick={() => void detect()}>{busy === 'detect' ? '正在推理…' : '运行检测'}</button>
         </div>
-        <div className="inference-result">
+        <div className="inference-result" aria-busy={busy === 'detect'} aria-live="polite">
           {!result ? <Empty title={status?.available ? '等待检测图片' : '尚未激活模型'} text={status?.available ? '检测结果与耗时将在这里显示。' : '在已完成的训练运行中激活最佳模型。'} /> : <>
             <div className="result-head"><div><span>检测数量</span><strong>{result.detections.length}</strong></div><div><span>GPU/CPU 推理</span><strong>{result.timing_ms.inference.toFixed(1)} ms</strong></div></div>
             <div className="detection-list">{result.detections.slice(0, 8).map((item, index) => <div key={`${item.class_id}-${index}`}><span>{item.class_name}</span><strong>{(item.confidence * 100).toFixed(1)}%</strong></div>)}</div>
@@ -210,20 +242,43 @@ export function InferenceWorkspace({ status, busy, perform }: { status: Inferenc
 
 export type CreateDatasetInput = { name: string; scene: string; labels: string; files: File[] }
 
-export function CreateDatasetDialog({ busy, onClose, onSubmit }: { busy: boolean; onClose: () => void; onSubmit: (input: CreateDatasetInput) => void }) {
+export function CreateDatasetDialog({ busy, onClose, onSubmit, maxBytes = 511 * 1024 * 1024 }: { busy: boolean; onClose: () => void; onSubmit: (input: CreateDatasetInput) => void; maxBytes?: number }) {
   const [name, setName] = useState('')
   const [scene, setScene] = useState('board')
   const [labels, setLabels] = useState('pit,scratch')
   const [files, setFiles] = useState<File[]>([])
-  const submit = (event: FormEvent) => { event.preventDefault(); void onSubmit({ name, scene, labels, files }) }
+  const dialogRef = useDialog(busy, onClose)
+  const valid = name.trim().length >= 2 && labels.split(/[,，]/).some((label) => label.trim()) && files.length > 0
+  const submit = (event: FormEvent) => { event.preventDefault(); if (valid && !busy) void onSubmit({ name: name.trim(), scene, labels, files }) }
   return (
     <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose() }}>
-      <form className="dialog" onSubmit={submit}>
-        <div className="dialog-head"><div><p className="eyebrow">NEW DATASET</p><h2>创建数据集</h2></div><button type="button" className="icon-button" onClick={onClose} disabled={busy} aria-label="关闭">×</button></div>
-        <label><span>数据集名称</span><input autoFocus required minLength={2} maxLength={100} value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：一号线板材缺陷" /></label>
-        <div className="form-grid two"><label><span>场景</span><select value={scene} onChange={(event) => setScene(event.target.value)}><option value="board">板材</option><option value="surface">表面检测</option><option value="component">零部件</option><option value="custom">其他</option></select></label><label><span>缺陷类别</span><input required value={labels} onChange={(event) => setLabels(event.target.value)} placeholder="pit,scratch" /></label></div>
-        <label className="file-picker"><strong>{files.length ? `已选择 ${files.length} 张图片` : '选择原始图片'}</strong><span>{files.length ? files.slice(0, 3).map((file) => file.name).join('、') : '支持多选，服务端会按内容去重并检查图片有效性。'}</span><input required type="file" accept="image/*" multiple onChange={(event) => setFiles(Array.from(event.target.files ?? []))} /></label>
-        <div className="dialog-actions"><button type="button" onClick={onClose} disabled={busy}>取消</button><button className="primary" disabled={busy || files.length === 0}>{busy ? '正在上传…' : '创建并上传'}</button></div>
+      <form className="dialog" ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="create-dataset-title" aria-busy={busy} onSubmit={submit}>
+        <div className="dialog-head"><div><p className="eyebrow">A FRESH START</p><h2 id="create-dataset-title">创建数据集</h2></div><button type="button" className="icon-button" onClick={onClose} disabled={busy} aria-label="关闭"><Icon name="close" /></button></div>
+        <p className="dialog-intro">从一组图片开始，为下一次模型训练做好准备。</p>
+        <label><span>数据集名称</span><input required minLength={2} maxLength={100} disabled={busy} value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：一号线板材缺陷" /></label>
+        <div className="form-grid two"><label><span>场景</span><select value={scene} disabled={busy} onChange={(event) => setScene(event.target.value)}><option value="board">板材</option><option value="surface">表面检测</option><option value="component">零部件</option><option value="custom">其他</option></select></label><label><span>缺陷类别 · 逗号分隔</span><input required disabled={busy} value={labels} onChange={(event) => setLabels(event.target.value)} placeholder="pit,scratch" /></label></div>
+        <ImagePicker files={files} onChange={setFiles} multiple disabled={busy} maxBytes={maxBytes} />
+        <div className="dialog-actions"><span className="dialog-hint">{busy ? '正在校验与上传，请稍候' : '可按 Esc 关闭'}</span><button type="button" onClick={onClose} disabled={busy}>取消</button><button className="primary" disabled={busy || !valid}>{busy && <span className="spinner" aria-hidden="true" />}{busy ? '正在上传…' : '创建并上传'}</button></div>
+      </form>
+    </div>
+  )
+}
+
+export function NetworkAccessDialog({ busy, error, onSubmit }: { busy: boolean; error: string | null; onSubmit: (token: string) => void }) {
+  const [token, setToken] = useState('')
+  const dialogRef = useDialog(busy)
+  const submit = (event: FormEvent) => {
+    event.preventDefault()
+    void onSubmit(token)
+  }
+  return (
+    <div className="dialog-backdrop" role="presentation">
+      <form className="dialog access-dialog" ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="access-title" onSubmit={submit}>
+        <div className="dialog-head"><div><p className="eyebrow">NETWORK SECURITY</p><h2 id="access-title">连接受保护的工作台</h2></div></div>
+        <p>服务正在网络模式下运行。请输入管理员提供的 API Token；凭据只保存在当前浏览器会话中。</p>
+        <label><span>API Token</span><input required minLength={32} disabled={busy} type="password" autoComplete="current-password" value={token} onChange={(event) => setToken(event.target.value)} /></label>
+        {error && <div className="inline-error" role="alert"><strong>验证失败</strong><span>{error}</span></div>}
+        <div className="dialog-actions"><button className="primary" disabled={busy || token.length < 32}>{busy ? '正在验证…' : '连接'}</button></div>
       </form>
     </div>
   )
@@ -234,9 +289,17 @@ export function SectionTitle({ eyebrow, title, note }: { eyebrow: string; title:
 }
 
 export function Feedback({ error, message, onClose }: { error: string | null; message: string | null; onClose: () => void }) {
+  const [paused, setPaused] = useState(false)
+  const closeRef = useRef(onClose)
+  useEffect(() => { closeRef.current = onClose }, [onClose])
+  useEffect(() => {
+    if (!message || error || paused) return
+    const timer = window.setTimeout(() => closeRef.current(), 7000)
+    return () => window.clearTimeout(timer)
+  }, [error, message, paused])
   const text = error ?? message
   if (!text) return null
-  return <div className={`notice ${error ? 'error' : 'success'}`} role={error ? 'alert' : 'status'}><span>{text}</span><button onClick={onClose} aria-label="关闭提示">×</button></div>
+  return <div className={`notice ${error ? 'error' : 'success'}`} role={error ? 'alert' : 'status'} onMouseEnter={() => setPaused(true)} onMouseLeave={() => setPaused(false)} onFocus={() => setPaused(true)} onBlur={() => setPaused(false)}><span className="notice-symbol" aria-hidden="true">{error ? '!' : <Icon name="check" />}</span><div><strong>{error ? '操作未完成' : '操作成功'}</strong><span>{text}</span></div><button onClick={onClose} aria-label="关闭提示"><Icon name="close" /></button></div>
 }
 
 function Empty({ title, text, action, onAction }: { title: string; text: string; action?: string; onAction?: () => void }) {

@@ -8,7 +8,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     DEBIAN_FRONTEND=noninteractive \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
-    DEFECTDOCK_WORKSPACE=/data
+    DEFECTDOCK_WORKSPACE=/data \
+    DEFECTDOCK_SECURITY_MODE=network
 
 WORKDIR /app
 
@@ -19,7 +20,7 @@ RUN apt-get -o Acquire::Retries=5 update \
 COPY pyproject.toml uv.lock ./
 RUN python -m pip install --no-cache-dir uv==0.11.13 \
     && if [ "$DEFECTDOCK_INSTALL_TRAIN" = "1" ]; then \
-         uv sync --locked --no-dev --no-install-project --extra train; \
+         uv sync --locked --no-dev --no-install-project --extra train --extra export; \
        else \
          uv sync --locked --no-dev --no-install-project; \
        fi \
@@ -28,7 +29,7 @@ RUN python -m pip install --no-cache-dir uv==0.11.13 \
 COPY README.md LICENSE THIRD_PARTY_NOTICES.md ./
 COPY src ./src
 RUN if [ "$DEFECTDOCK_INSTALL_TRAIN" = "1" ]; then \
-      uv sync --locked --no-dev --no-editable --extra train; \
+      uv sync --locked --no-dev --no-editable --extra train --extra export; \
     else \
       uv sync --locked --no-dev --no-editable; \
     fi \

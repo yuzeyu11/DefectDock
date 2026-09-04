@@ -3,6 +3,21 @@
 All notable changes are recorded here. This project follows Semantic Versioning
 once the public API reaches `1.0.0`.
 
+## Unreleased
+
+- Added routed workbench pages for datasets, training, runs, model management,
+  and inference, with frontend regression tests.
+- Added model-assisted annotation review and registered, hash-verified training
+  snapshots linked to explicit annotation versions.
+- Added model registration, approval, atomic activation, activation history,
+  and rollback, with database migrations for the new metadata.
+- Added optional ONNX export packages with integrity manifests, numerical
+  comparison, and CPU benchmarks; target-hardware acceptance remains pending.
+- Added local/network security modes, Bearer authentication, request limits,
+  and redacted audit events.
+- Extended ignore rules for local databases, frontend coverage, and build
+  caches while keeping the export source package visible to Git.
+
 ## 0.1.0 - 2026-08-29
 
 - Established DefectDock as an independent repository.

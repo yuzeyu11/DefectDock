@@ -91,7 +91,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(len(events.json()), 1)
         self.assertEqual(events.json()[0]["event"], "training_started")
 
-    def test_real_images_can_be_uploaded_deduplicated_and_frozen(self):
+    def test_real_images_can_be_uploaded_and_deduplicated_but_not_frozen_without_labels(self):
         image_bytes = self._png_bytes()
         response = self.client.post(
             "/api/datasets",
@@ -112,8 +112,8 @@ class ApiTests(unittest.TestCase):
         preview = self.client.get(detail.json()["images"][0]["preview_url"])
         self.assertEqual(preview.status_code, 200)
         frozen = self.client.post(f"/api/datasets/{dataset_id}/freeze")
-        self.assertEqual(frozen.status_code, 200)
-        self.assertEqual(frozen.json()["status"], "frozen")
+        self.assertEqual(frozen.status_code, 409)
+        self.assertIn("annotation version", frozen.json()["detail"])
 
     def test_direct_annotations_snapshot_training_and_activation_flow(self):
         upload = self.client.post(
@@ -162,6 +162,26 @@ class ApiTests(unittest.TestCase):
             annotations.json()["annotation_version"]["manifest_sha256"],
         )
         self.assertTrue(snapshot_response.json()["quality"]["ok"])
+        self.assertEqual(
+            snapshot_response.json()["record"]["snapshot_sha256"],
+            snapshot["snapshot_sha256"],
+        )
+        snapshots = self.client.get(f"/api/datasets/{dataset_id}/training-snapshots")
+        self.assertEqual(snapshots.status_code, 200, snapshots.text)
+        self.assertEqual(snapshots.json()[0]["snapshot_id"], snapshot["snapshot_id"])
+        snapshot_detail = self.client.get(
+            f"/api/datasets/{dataset_id}/training-snapshots/{snapshot['snapshot_id']}"
+        )
+        self.assertEqual(snapshot_detail.status_code, 200, snapshot_detail.text)
+        self.assertEqual(snapshot_detail.json()["annotation_version_id"], version_id)
+        snapshot_image = next(Path(snapshot["data_yaml"]).parent.glob("images/*/*"))
+        original_image = snapshot_image.read_bytes()
+        snapshot_image.write_bytes(b"tampered")
+        tampered = self.client.get(
+            f"/api/datasets/{dataset_id}/training-snapshots/{snapshot['snapshot_id']}"
+        )
+        self.assertEqual(tampered.status_code, 409, tampered.text)
+        snapshot_image.write_bytes(original_image)
 
         def fake_runner(config, run_dir, on_event, should_cancel, *, project_root):
             weights = Path(run_dir) / "trainer_output" / "weights"

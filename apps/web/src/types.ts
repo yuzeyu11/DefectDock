@@ -5,6 +5,10 @@ export type Health = {
   training_submission_enabled: boolean
   dataset_upload_enabled: boolean
   inference_ready: boolean
+  security_mode: 'local' | 'network'
+  authentication_required: boolean
+  max_request_bytes: number
+  active_model_integrity: 'none' | 'legacy' | 'injected' | 'verified' | 'failed'
 }
 
 export type AnnotationVersion = {
@@ -15,6 +19,9 @@ export type AnnotationVersion = {
   manifest_sha256: string
   labeled_count: number
   unlabeled_count: number
+  review_status: 'candidate' | 'approved'
+  reviewed_by: string | null
+  reviewed_at: string | null
   created_at: string
   is_current: boolean
 }
@@ -67,6 +74,22 @@ export type SnapshotResult = {
     warnings: string[]
   }
   stats: Record<string, unknown>
+}
+
+export type TrainingSnapshot = {
+  snapshot_id: string
+  dataset_id: string
+  annotation_version_id: string
+  snapshot_sha256: string
+  manifest_path: string
+  manifest_sha256: string
+  data_yaml: string
+  image_count: number
+  train_count: number
+  val_count: number
+  seed: number
+  val_ratio: number
+  created_at: string
 }
 
 export type RunStatus =
@@ -147,6 +170,51 @@ export type InferenceStatus = {
   confidence: number
   max_detections: number
   device: string
+}
+
+export type ModelVersion = {
+  model_version_id: string
+  run_id: string
+  project: string
+  task: string
+  engine: string
+  architecture: string
+  dataset: string
+  dataset_version: string
+  config_hash: string
+  artifact_path: string
+  artifact_sha256: string
+  artifact_size: number
+  run_manifest_path: string | null
+  run_manifest_sha256: string | null
+  metrics: Record<string, unknown> | null
+  created_by: string
+  created_at: string
+  approval_status: 'candidate' | 'approved'
+  approved_by: string | null
+  approved_at: string | null
+  is_active: boolean
+}
+
+export type ModelActivation = {
+  activation_id: string
+  action: 'activate' | 'rollback'
+  model_version_id: string
+  previous_model_version_id: string | null
+  actor: string
+  created_at: string
+}
+
+export type OnnxExportResult = {
+  created: boolean
+  export: {
+    package_dir: string
+    manifest_path?: string
+    opset: number
+    artifact: { path: string; sha256: string; size: number }
+    validation: { passed: boolean; [key: string]: unknown }
+    benchmark: { median_ms?: number; provider: string; [key: string]: unknown }
+  }
 }
 
 export type Detection = {

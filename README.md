@@ -9,7 +9,7 @@
 
 DefectDock 是面向工业视觉项目的模型全生命周期工作台。它把数据接入、标注协同、质量检查、训练、工业指标验收、模型激活和现场视频流推理放在一条可审计的链路中，让一个演示算法能够逐步变成可部署、可复现、可维护的产品。
 
-当前版本已经建立工程交付基线：后端、CLI、数据治理、TorchVision 训练/推理、实验记录和 API 已具备；React + TypeScript 工作台已接通首条可操作产品纵切。真实客户数据验收、权限体系、正式模型注册表和生产监控仍在路线图中，完成状态以测试和验收记录为准。
+当前版本已经建立工程交付基线：后端、CLI、数据治理、TorchVision 训练/推理、实验记录、自动标注审核、模型注册与回滚均已具备；React + TypeScript 工作台已接通首条可操作产品纵切。真实客户数据与目标硬件验收、权限体系和生产监控仍在路线图中，完成状态以测试和验收记录为准。
 
 ## 为什么是 DefectDock
 
@@ -54,7 +54,7 @@ Windows PowerShell：
 ```powershell
 .venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-pip install -e ".[train]"
+pip install -e ".[train,export]"
 ```
 
 Linux/macOS：
@@ -62,13 +62,13 @@ Linux/macOS：
 ```bash
 source .venv/bin/activate
 python -m pip install --upgrade pip
-pip install -e ".[train]"
+pip install -e ".[train,export]"
 ```
 
 仓库同时提交跨平台 `uv.lock`。需要严格复现已锁定依赖时，可使用：
 
 ```bash
-uv sync --locked --extra train --extra dev
+uv sync --locked --extra train --extra export --extra dev
 ```
 
 检查环境：
@@ -125,19 +125,31 @@ defectdock deploy outputs/<project>/object-detection/<run-id>/trainer_output/wei
 defectdock detect samples/example.jpg
 ```
 
-启动 API：
+默认以本地模式启动 API，仅允许监听回环地址且不要求登录：
 
 ```bash
-defectdock serve --host 0.0.0.0 --port 8000
+defectdock serve --host 127.0.0.1 --port 8000
 ```
 
 打开 `http://localhost:8000/docs` 查看交互式接口文档，健康检查位于 `GET /api/health`。
 
+需要从其他机器访问时，必须显式启用网络模式并提供至少 32 字节的共享 Token；生产环境还应在可信反向代理处终止 TLS：
+
+```powershell
+$env:DEFECTDOCK_API_TOKEN = python -c "import secrets; print(secrets.token_urlsafe(32))"
+defectdock serve --mode network --host 0.0.0.0 --port 8000
+```
+
+网络模式使用 `Authorization: Bearer <token>`。写操作、鉴权失败和超限请求会以不含请求体和凭据的 JSONL 记录到 `.defectdock/audit.jsonl`；单次请求默认上限为 512 MiB，可通过 `DEFECTDOCK_MAX_REQUEST_BYTES` 下调。
+
 容器默认构建轻量 API 镜像，工作区固定挂载到 `/data`：
 
-```bash
+```powershell
+$env:DEFECTDOCK_API_TOKEN = python -c "import secrets; print(secrets.token_urlsafe(32))"
 docker compose up --build
 ```
+
+容器固定运行在网络模式，未设置合格的 `DEFECTDOCK_API_TOKEN` 时 Compose 会拒绝启动。健康检查保持公开，其余 API 要求 Bearer Token。
 
 GPU 训练使用显式 Compose 覆盖，它会从同一份 `uv.lock` 安装训练栈并申请
 NVIDIA GPU：
@@ -162,9 +174,11 @@ pnpm run dev
 开发环境默认将 `/api` 代理到 `http://127.0.0.1:8000`。工作台已支持：
 
 - 创建图片数据集并查看去重后的图片预览；
-- 上传 YOLO 文本标注、查看当前标注版本并冻结训练快照；
+- 上传 YOLO 文本标注，或用已注册模型生成候选框并经人工批准；
+- 创建/打开 CVAT 任务、同步完成的标注，以及查询不可变训练快照；
 - 配置并提交训练、轮询状态、取消运行、查看指标和模型产物；
-- 激活成功运行的最佳 checkpoint，并提交单图推理验证。
+- 注册并原子激活成功运行的最佳 checkpoint、审计历史与一键回滚；
+- 导出带哈希、运行时和数值一致性报告的 ONNX 包，并提交单图推理验证。
 
 轻量 API 镜像可以浏览和接入数据，但会明确禁用训练提交；需要从页面发起
 训练时应使用 GPU 镜像。具体操作和当前边界见
@@ -207,13 +221,17 @@ DefectDock 原创代码当前采用 [专有许可证](LICENSE)，在权利人明
 - [x] Python/前端 SBOM、漏洞与许可证发布证据工作流
 - [x] 轻量容器固定基础镜像摘要、严格使用 `uv.lock`，并移除运行时构建工具
 - [x] CUDA 13 GPU 训练镜像、Compose 覆盖、运行时探针与容器内训练烟雾验收
+- [x] 模型版本注册、制品完整性校验、原子激活、审计历史和回滚
+- [x] 已注册模型自动标注、候选预览、人工批准与冻结门禁
+- [x] 训练快照登记、标注版本外键、哈希验证和列表/详情查询
+- [x] ONNX 导出契约、数值一致性验证、CPU 基准和部署 manifest
 - [ ] 持久化任务队列、自动重试和多设备资源调度
-- [ ] 参考 Geti 建立项目、数据版本、模型版本和部署版本的完整追溯关系
+- [ ] 参考 Geti 扩展到多项目和部署实例级的完整追溯关系
 - [ ] 参考 Anomalib Studio 增加异常检测任务、热力图和阈值验收
 - [ ] 用户、组织、角色与审计日志
-- [ ] 模型注册、审批、灰度发布和回滚
+- [ ] 用户身份下的多级模型审批与灰度发布（当前已有单工作站注册、审计和回滚）
 - [ ] 参考 AWS DDA 增加云中立的边缘设备、部署状态和断网续传能力
-- [ ] ONNX/TensorRT 可选部署适配器与基准测试
+- [ ] 在客户目标硬件验收 ONNX 性能并按需求增加 TensorRT 适配器
 - [ ] PostgreSQL、对象存储和生产可观测性
 
 ## 协作与安全
@@ -222,4 +240,4 @@ DefectDock 原创代码当前采用 [专有许可证](LICENSE)，在权利人明
 
 ---
 
-**English summary:** DefectDock is an industrial computer-vision lifecycle workbench with a React/TypeScript UI, FastAPI backend, auditable dataset/run metadata, industrial evaluation, and a built-in PyTorch/TorchVision detection adapter. Version `0.1.0` is an engineering foundation; production identity, asynchronous scheduling, registry, and observability remain planned work.
+**English summary:** DefectDock is an industrial computer-vision lifecycle workbench with a React/TypeScript UI, FastAPI backend, auditable dataset/run/model metadata, reviewed model-assisted labeling, industrial evaluation, ONNX export, and a built-in PyTorch/TorchVision detection adapter. Version `0.1.0` is an engineering foundation; production identity, asynchronous scheduling, target-hardware qualification, and observability remain planned work.
