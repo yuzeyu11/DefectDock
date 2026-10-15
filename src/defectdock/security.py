@@ -21,6 +21,8 @@ from starlette.datastructures import Headers, MutableHeaders
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from defectdock.rate_limits import RateLimitSettings, RequestRateLimiter
+
 SECURITY_MODE_ENV = "DEFECTDOCK_SECURITY_MODE"
 API_TOKEN_ENV = "DEFECTDOCK_API_TOKEN"
 MAX_REQUEST_BYTES_ENV = "DEFECTDOCK_MAX_REQUEST_BYTES"
@@ -40,6 +42,7 @@ class SecuritySettings:
     audit_log_path: Path
     api_token: str | None = field(default=None, repr=False)
     max_request_bytes: int = DEFAULT_MAX_REQUEST_BYTES
+    rate_limits: RateLimitSettings = field(default_factory=RateLimitSettings)
 
     @classmethod
     def from_sources(
@@ -49,6 +52,7 @@ class SecuritySettings:
         mode: str | SecurityMode | None = None,
         api_token: str | None = None,
         max_request_bytes: int | None = None,
+        rate_limits: RateLimitSettings | None = None,
         environ: Mapping[str, str] | None = None,
     ) -> "SecuritySettings":
         environment = os.environ if environ is None else environ
@@ -82,7 +86,12 @@ class SecuritySettings:
             api_token=selected_token,
             max_request_bytes=selected_limit,
             audit_log_path=Path(state_dir).resolve() / "audit.jsonl",
+            rate_limits=rate_limits or RateLimitSettings.from_env(environment),
         )
+
+    @property
+    def rate_limiting_enabled(self) -> bool:
+        return self.mode is SecurityMode.NETWORK
 
     @property
     def token_fingerprint(self) -> str | None:
@@ -135,6 +144,7 @@ class SecurityBoundaryMiddleware:
         self.app = app
         self.policy = policy
         self.audit = AuditWriter(policy.audit_log_path)
+        self.rate_limiter = RequestRateLimiter(policy.rate_limits)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -166,6 +176,11 @@ class SecurityBoundaryMiddleware:
             await send(message)
 
         if self.policy.mode is SecurityMode.NETWORK and path not in PUBLIC_PATHS and not authenticated:
+            retry_after = self.rate_limiter.acquire("auth_failures")
+            if retry_after:
+                await self._rate_limited(send_with_metadata, retry_after)
+                self._audit(method, path, 429, request_id, client_host, False, started)
+                return
             await self._reject(
                 send_with_metadata,
                 401,
@@ -174,6 +189,17 @@ class SecurityBoundaryMiddleware:
             )
             self._audit(method, path, 401, request_id, client_host, False, started)
             return
+
+        if self.policy.rate_limiting_enabled and path not in PUBLIC_PATHS:
+            retry_after = (
+                self.rate_limiter.acquire("requests", "mutations")
+                if method in MUTATING_METHODS
+                else self.rate_limiter.acquire("requests")
+            )
+            if retry_after:
+                await self._rate_limited(send_with_metadata, retry_after)
+                self._audit(method, path, 429, request_id, client_host, authenticated, started)
+                return
 
         content_length = headers.get("content-length")
         if content_length:
@@ -206,7 +232,7 @@ class SecurityBoundaryMiddleware:
             if not response_started:
                 await self._reject(send_with_metadata, 413, "Request body exceeds the configured limit")
         finally:
-            if method in MUTATING_METHODS or status_code in {401, 403, 413}:
+            if method in MUTATING_METHODS or status_code in {401, 403, 413, 429}:
                 self._audit(
                     method,
                     path,
@@ -226,6 +252,18 @@ class SecurityBoundaryMiddleware:
             and scheme.lower() == "bearer"
             and hmac.compare_digest(credentials, self.policy.api_token)
         )
+
+    @staticmethod
+    async def _rate_limited(send: Send, retry_after: int) -> None:
+        await JSONResponse(
+            {
+                "detail": "Request rate limit exceeded; retry after the indicated delay",
+                "code": "rate_limited",
+                "retry_after_seconds": retry_after,
+            },
+            status_code=429,
+            headers={"Retry-After": str(retry_after), "Cache-Control": "no-store"},
+        )({"type": "http"}, _empty_receive, send)
 
     @staticmethod
     async def _reject(

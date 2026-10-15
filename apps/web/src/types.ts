@@ -8,6 +8,8 @@ export type Health = {
   security_mode: 'local' | 'network'
   authentication_required: boolean
   max_request_bytes: number
+  rate_limiting_enabled: boolean
+  rate_limits_per_minute: { requests: number; mutations: number; auth_failures: number }
   active_model_integrity: 'none' | 'legacy' | 'injected' | 'verified' | 'failed'
 }
 

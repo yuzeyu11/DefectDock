@@ -18,11 +18,13 @@ import type {
 
 export class ApiError extends Error {
   status: number
+  retryAfterSeconds: number | null
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, retryAfterSeconds: number | null = null) {
     super(message)
     this.name = 'ApiError'
     this.status = status
+    this.retryAfterSeconds = retryAfterSeconds
   }
 }
 
@@ -53,7 +55,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ? await response.json()
     : await response.text()
   if (!response.ok) {
-    throw new ApiError(response.status, errorMessage(payload, response.status))
+    throw responseError(response, payload)
   }
   return payload as T
 }
@@ -66,7 +68,7 @@ async function requestBlob(path: string): Promise<Blob> {
     throw new ApiError(0, '无法连接 DefectDock API，请确认后端服务已启动。')
   }
   if (!response.ok) {
-    throw new ApiError(response.status, `图片加载失败（HTTP ${response.status}）`)
+    throw responseError(response, `图片加载失败（HTTP ${response.status}）`)
   }
   return response.blob()
 }
@@ -76,6 +78,22 @@ function authenticatedHeaders(source?: HeadersInit): Headers {
   const token = typeof window === 'undefined' ? null : window.sessionStorage.getItem(API_TOKEN_KEY)
   if (token) headers.set('Authorization', `Bearer ${token}`)
   return headers
+}
+
+function responseError(response: Response, payload: unknown): ApiError {
+  if (response.status !== 429) return new ApiError(response.status, errorMessage(payload, response.status))
+  const value = response.headers.get('Retry-After')?.trim()
+  const delay = value
+    ? /^\d+$/.test(value) ? Number(value) : (Date.parse(value) - Date.now()) / 1000
+    : NaN
+  const retryAfterSeconds = Number.isFinite(delay) ? Math.max(1, Math.ceil(delay)) : null
+  return new ApiError(
+    429,
+    retryAfterSeconds === null
+      ? '请求过于频繁，请稍后重试。为避免重复提交，本次操作不会自动重试。'
+      : `请求过于频繁，请等待 ${retryAfterSeconds} 秒后重试。为避免重复提交，本次操作不会自动重试。`,
+    retryAfterSeconds,
+  )
 }
 
 function errorMessage(payload: unknown, status: number): string {

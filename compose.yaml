@@ -9,6 +9,9 @@ services:
       - "8000:8000"
     environment:
       DEFECTDOCK_API_TOKEN: ${DEFECTDOCK_API_TOKEN:?Set DEFECTDOCK_API_TOKEN to a random value of at least 32 bytes}
+      DEFECTDOCK_REQUESTS_PER_MINUTE: ${DEFECTDOCK_REQUESTS_PER_MINUTE:-120}
+      DEFECTDOCK_MUTATIONS_PER_MINUTE: ${DEFECTDOCK_MUTATIONS_PER_MINUTE:-30}
+      DEFECTDOCK_AUTH_FAILURES_PER_MINUTE: ${DEFECTDOCK_AUTH_FAILURES_PER_MINUTE:-20}
     volumes:
       - defectdock-state:/data/.defectdock
       - ./datasets:/data/datasets

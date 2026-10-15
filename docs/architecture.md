@@ -52,6 +52,12 @@ credential-free JSON records to `.defectdock/audit.jsonl`, correlated by an
 replacement for TLS termination, user identities, role authorization, or a
 central audit store.
 
+Network mode additionally uses three bounded, thread-safe token buckets shared
+across the process: authenticated requests, mutations, and authentication failures.
+Rejected requests return 429 with Retry-After before business handlers or body
+reads. Public health/docs remain available. Local mode is not rate-limited;
+multi-worker or multi-instance deployments need a shared gateway policy.
+
 ## Target production evolution
 
 SQLite and in-process training are appropriate for the first workstation

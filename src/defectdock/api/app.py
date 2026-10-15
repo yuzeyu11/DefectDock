@@ -169,6 +169,8 @@ def create_app(
             "security_mode": app.state.security.mode.value,
             "authentication_required": app.state.security.mode is SecurityMode.NETWORK,
             "max_request_bytes": app.state.security.max_request_bytes,
+            "rate_limiting_enabled": app.state.security.rate_limiting_enabled,
+            "rate_limits_per_minute": app.state.security.rate_limits.to_dict(),
             "active_model_integrity": app.state.active_model_integrity,
         }
 

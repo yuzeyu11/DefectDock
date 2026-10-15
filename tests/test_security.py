@@ -72,6 +72,8 @@ class NetworkSecurityApiTests(unittest.TestCase):
         self.assertEqual(health.status_code, 200)
         self.assertEqual(health.json()["security_mode"], "network")
         self.assertTrue(health.json()["authentication_required"])
+        self.assertTrue(health.json()["rate_limiting_enabled"])
+        self.assertEqual(health.json()["rate_limits_per_minute"]["requests"], 120)
 
         missing = self.client.get("/api/datasets")
         self.assertEqual(missing.status_code, 401)
